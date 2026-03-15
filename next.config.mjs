@@ -1,14 +1,15 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: false },
-  // Allow Mapbox GL to be bundled
   transpilePackages: ['mapbox-gl'],
-  webpack: (config) => {
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      // Avoid mapbox-gl browser env issues
-    };
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      // Mapbox GL uses browser-specific globals
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        path: false,
+      };
+    }
     return config;
   },
 };

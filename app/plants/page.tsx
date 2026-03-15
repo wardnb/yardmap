@@ -13,6 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { mockPlants, mockZones } from "@/lib/mock-data";
 import type { Plant } from "@/types";
+import { PhotoGallery } from "@/components/photo-gallery";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Camera } from "lucide-react";
 
 const statusConfig = {
   healthy:          { label: "Healthy",          icon: Leaf,          variant: "success" as const,  color: "text-green-400" },
@@ -182,48 +185,69 @@ function PlantDetail({ plant, zoneName }: { plant: Plant; zoneName: string }) {
   const config = statusConfig[plant.status];
   const Icon = config.icon;
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Icon className={`w-5 h-5 ${config.color}`} />
-        <Badge variant={config.variant}>{config.label}</Badge>
-      </div>
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        {plant.species && (
-          <div>
-            <div className="text-muted-foreground text-xs">Species</div>
-            <div className="italic">{plant.species}</div>
+    <Tabs defaultValue="info">
+      <TabsList className="w-full mb-3">
+        <TabsTrigger value="info" className="flex-1">Info</TabsTrigger>
+        <TabsTrigger value="photos" className="flex-1 flex items-center gap-1 justify-center">
+          <Camera className="w-3 h-3" />Photos
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="info">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Icon className={`w-5 h-5 ${config.color}`} />
+            <Badge variant={config.variant}>{config.label}</Badge>
           </div>
-        )}
-        <div>
-          <div className="text-muted-foreground text-xs">Zone</div>
-          <div>{zoneName}</div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            {plant.species && (
+              <div>
+                <div className="text-muted-foreground text-xs">Species</div>
+                <div className="italic">{plant.species}</div>
+              </div>
+            )}
+            <div>
+              <div className="text-muted-foreground text-xs">Zone</div>
+              <div>{zoneName}</div>
+            </div>
+            {plant.date_planted && (
+              <div>
+                <div className="text-muted-foreground text-xs">Date Planted</div>
+                <div>{format(new Date(plant.date_planted), "MMMM d, yyyy")}</div>
+              </div>
+            )}
+            {plant.source && (
+              <div>
+                <div className="text-muted-foreground text-xs">Source</div>
+                <div>{plant.source}</div>
+              </div>
+            )}
+            {plant.cost != null && (
+              <div>
+                <div className="text-muted-foreground text-xs">Cost</div>
+                <div>${plant.cost.toFixed(2)}</div>
+              </div>
+            )}
+          </div>
+          {plant.notes && (
+            <div>
+              <div className="text-muted-foreground text-xs mb-1">Notes</div>
+              <p className="text-sm bg-muted rounded-lg p-3">{plant.notes}</p>
+            </div>
+          )}
         </div>
-        {plant.date_planted && (
-          <div>
-            <div className="text-muted-foreground text-xs">Date Planted</div>
-            <div>{format(new Date(plant.date_planted), "MMMM d, yyyy")}</div>
-          </div>
-        )}
-        {plant.source && (
-          <div>
-            <div className="text-muted-foreground text-xs">Source</div>
-            <div>{plant.source}</div>
-          </div>
-        )}
-        {plant.cost != null && (
-          <div>
-            <div className="text-muted-foreground text-xs">Cost</div>
-            <div>${plant.cost.toFixed(2)}</div>
-          </div>
-        )}
-      </div>
-      {plant.notes && (
-        <div>
-          <div className="text-muted-foreground text-xs mb-1">Notes</div>
-          <p className="text-sm bg-muted rounded-lg p-3">{plant.notes}</p>
-        </div>
-      )}
-    </div>
+      </TabsContent>
+
+      <TabsContent value="photos">
+        <PhotoGallery
+          entityType="plant"
+          entityId={plant.id}
+          entityName={plant.name}
+          plantName={plant.species || plant.name}
+          showAi={true}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }
 

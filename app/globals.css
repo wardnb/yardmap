@@ -1,4 +1,6 @@
-@import 'mapbox-gl/dist/mapbox-gl.css';
+/* Mapbox GL CSS — must be imported before Tailwind */
+@import "mapbox-gl/dist/mapbox-gl.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -36,6 +38,12 @@
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+}
+
+/* GPS pulse animation */
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(2.5); opacity: 0; }
 }
 
 /* Mapbox overrides */

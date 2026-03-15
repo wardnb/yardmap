@@ -4,7 +4,6 @@
 
 /** Earth radius in feet */
 const EARTH_RADIUS_FT = 20_902_231;
-const EARTH_RADIUS_M = 6_371_000;
 
 /** Haversine distance between two [lng,lat] points in feet */
 export function distanceFt(a: [number, number], b: [number, number]): number {

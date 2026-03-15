@@ -30,11 +30,6 @@ export default function Dashboard() {
 
   const needsAttention = mockPlants.filter(p => p.status === "needs_attention");
   const healthyCount = mockPlants.filter(p => p.status === "healthy").length;
-  
-  const expiringInventory = mockInventory
-    .filter(i => i.expiry_date && new Date(i.expiry_date) < new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000))
-    .slice(0, 3);
-
   const monthName = now.toLocaleString("default", { month: "long" });
 
   return (
