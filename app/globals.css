@@ -1,0 +1,63 @@
+@import 'mapbox-gl/dist/mapbox-gl.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 11%;
+    --foreground: 213 31% 91%;
+    --card: 222 47% 13%;
+    --card-foreground: 213 31% 91%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 213 31% 91%;
+    --primary: 142 71% 45%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 222 47% 17%;
+    --secondary-foreground: 213 31% 91%;
+    --muted: 223 47% 15%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 216 34% 17%;
+    --accent-foreground: 213 31% 91%;
+    --destructive: 0 63% 56%;
+    --destructive-foreground: 213 31% 91%;
+    --border: 216 34% 20%;
+    --input: 216 34% 17%;
+    --ring: 142 71% 45%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+/* Mapbox overrides */
+.mapboxgl-ctrl-logo {
+  display: none !important;
+}
+.mapboxgl-ctrl-attrib {
+  font-size: 10px !important;
+  background: rgba(0,0,0,0.5) !important;
+  color: rgba(255,255,255,0.5) !important;
+}
+.mapboxgl-ctrl-attrib a {
+  color: rgba(255,255,255,0.5) !important;
+}
+.mapboxgl-popup-content {
+  background: hsl(222, 47%, 13%) !important;
+  color: hsl(213, 31%, 91%) !important;
+  border: 1px solid hsl(216, 34%, 20%) !important;
+  border-radius: 8px !important;
+  padding: 12px !important;
+}
+.mapboxgl-popup-tip {
+  border-top-color: hsl(216, 34%, 20%) !important;
+  border-bottom-color: hsl(216, 34%, 20%) !important;
+}
