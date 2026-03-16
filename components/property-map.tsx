@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getZones, createZone, updateZone, deleteZone, getPlants } from "@/lib/data";
+import { getZones, createZone, updateZone, deleteZone, getPlants, fetchParcelBoundary } from "@/lib/data";
 import { polylineDistanceFt, polygonAreaSqFt, fmtFt, fmtM, fmtArea, mulchBags, mulchCuYd, plantCount } from "@/lib/geo";
 import { extractExifGps, createPhotoUrl } from "@/lib/exif";
 import { identifyPlant, diagnoseHealth } from "@/lib/ai-plant";
@@ -301,6 +301,18 @@ export default function PropertyMap() {
     } else {
       addZoneLayers(m, updatedZones);
     }
+  }, [mapLoaded]);
+
+  // ── parcel boundary overlay ───────────────────────────────────────────────
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapLoaded) return;
+    fetchParcelBoundary(BOISE_COORDS[0], BOISE_COORDS[1]).then(geo => {
+      if (!geo || m.getSource("parcel")) return;
+      m.addSource("parcel", { type: "geojson", data: { type: "Feature", properties: {}, geometry: geo as never } });
+      m.addLayer({ id: "parcel-border", type: "line", source: "parcel", paint: { "line-color": "#ffffff", "line-width": 2, "line-dasharray": [4, 2], "line-opacity": 0.8 } });
+      m.addLayer({ id: "parcel-fill", type: "fill", source: "parcel", paint: { "fill-color": "#ffffff", "fill-opacity": 0.04 } });
+    });
   }, [mapLoaded]);
 
   // ── layer toggle effect ───────────────────────────────────────────────────

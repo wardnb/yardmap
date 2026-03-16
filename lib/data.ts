@@ -113,3 +113,23 @@ export async function createHealthLog(log: Record<string, any>) {
   if (error) throw error;
   return data;
 }
+
+// Fetch parcel boundary from Idaho IDWR GIS (public data)
+export async function fetchParcelBoundary(lng: number, lat: number, radiusDeg = 0.002): Promise<object | null> {
+  const url = `https://gis.idwr.idaho.gov/hosting/rest/services/Reference/Parcels/FeatureServer/0/query?where=1%3D1&geometry=${lng-radiusDeg}%2C${lat-radiusDeg}%2C${lng+radiusDeg}%2C${lat+radiusDeg}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&outSR=4326&f=geojson`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const features = data.features || [];
+  if (!features.length) return null;
+  // Find closest to target point
+  let best: any = null, bestDist = 999;
+  for (const f of features) {
+    const ring = f.geometry?.coordinates?.[0];
+    if (!ring) continue;
+    const cx = ring.reduce((s: number, c: number[]) => s + c[0], 0) / ring.length;
+    const cy = ring.reduce((s: number, c: number[]) => s + c[1], 0) / ring.length;
+    const dist = Math.hypot(cx - lng, cy - lat);
+    if (dist < bestDist) { bestDist = dist; best = f; }
+  }
+  return best?.geometry || null;
+}
