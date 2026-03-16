@@ -22,7 +22,7 @@ const BOISE_COORDS: [number, number] = [-116.163076, 43.575335];
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
 type MapMode = "view" | "measure" | "boundary-walk" | "draw-zone";
-type MapLayer = "zones" | "plants" | "tasks" | "photos" | "measurements";
+type MapLayer = "zones" | "plants" | "tasks" | "photos" | "measurements" | "survey";
 type BaseStyle = "satellite" | "satellite-clean" | "streets" | "outdoors" | "light";
 
 const STYLES: Record<BaseStyle, string> = {
@@ -181,7 +181,7 @@ export default function PropertyMap() {
   const [mode, setMode] = useState<MapMode>("view");
   const [baseStyle, setBaseStyle] = useState<BaseStyle>("satellite");
   const [layers, setLayers] = useState<Record<MapLayer, boolean>>({
-    zones: true, plants: true, tasks: false, photos: true, measurements: true,
+    zones: true, plants: true, tasks: false, photos: true, measurements: true, survey: true,
   });
 
   // Data from Supabase
@@ -311,6 +311,26 @@ export default function PropertyMap() {
     }
   }, [mapLoaded]);
 
+  // ── ArcGIS survey overlay ─────────────────────────────────────────────────
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapLoaded) return;
+    if (m.getSource("survey-overlay")) return;
+    // Georeferenced bounds from GeoTIFF (NAD83 TM → WGS84 conversion)
+    const bounds: [number, number, number, number][] = [
+      [-116.1635195, 43.5752996], // SW
+      [-116.1627086, 43.5752996], // SE  
+      [-116.1627086, 43.5755109], // NE
+      [-116.1635195, 43.5755080], // NW
+    ];
+    m.addSource("survey-overlay", {
+      type: "image",
+      url: "https://imhbpwgyppqdcychauro.supabase.co/storage/v1/object/public/yardmap/property_survey.png",
+      coordinates: bounds as never,
+    });
+    m.addLayer({ id: "survey-layer", type: "raster", source: "survey-overlay", paint: { "raster-opacity": 0.7 }, before: "zones-fill" });
+  }, [mapLoaded]);
+
   // ── measured property boundary (from Supabase) ───────────────────────────
   useEffect(() => {
     const m = mapRef.current;
@@ -371,6 +391,7 @@ export default function PropertyMap() {
     document.querySelectorAll<HTMLElement>(".photo-marker").forEach(el => {
       el.style.display = layers.photos ? "" : "none";
     });
+    if (m.getLayer("survey-layer")) m.setLayoutProperty("survey-layer", "visibility", layers.survey ? "visible" : "none");
   }, [layers, mapLoaded]);
 
   // ── base style change ─────────────────────────────────────────────────────
