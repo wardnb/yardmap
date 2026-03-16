@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getZones, createZone, updateZone, deleteZone, getPlants, fetchParcelBoundary } from "@/lib/data";
+import { getZones, createZone, updateZone, deleteZone, getPlants, fetchParcelBoundary, getProperty } from "@/lib/data";
 import { polylineDistanceFt, polygonAreaSqFt, fmtFt, fmtM, fmtArea, mulchBags, mulchCuYd, plantCount } from "@/lib/geo";
 import { extractExifGps, createPhotoUrl } from "@/lib/exif";
 import { identifyPlant, diagnoseHealth } from "@/lib/ai-plant";
@@ -305,6 +305,17 @@ export default function PropertyMap() {
     } else {
       addZoneLayers(m, updatedZones);
     }
+  }, [mapLoaded]);
+
+  // ── measured property boundary (from Supabase) ───────────────────────────
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapLoaded) return;
+    getProperty().then(prop => {
+      if (!prop?.boundary_geojson || m.getSource("property-boundary")) return;
+      m.addSource("property-boundary", { type: "geojson", data: { type: "Feature", properties: {}, geometry: prop.boundary_geojson as never } });
+      m.addLayer({ id: "property-boundary-line", type: "line", source: "property-boundary", paint: { "line-color": "#22c55e", "line-width": 2, "line-opacity": 0.9 } });
+    });
   }, [mapLoaded]);
 
   // ── parcel boundary overlay ───────────────────────────────────────────────
