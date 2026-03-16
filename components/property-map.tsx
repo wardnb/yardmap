@@ -23,12 +23,22 @@ const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
 type MapMode = "view" | "measure" | "boundary-walk" | "draw-zone";
 type MapLayer = "zones" | "plants" | "tasks" | "photos" | "measurements";
-type BaseStyle = "satellite" | "streets" | "outdoors";
+type BaseStyle = "satellite" | "satellite-clean" | "streets" | "outdoors" | "light";
 
 const STYLES: Record<BaseStyle, string> = {
-  satellite: "mapbox://styles/mapbox/satellite-streets-v12",
-  streets: "mapbox://styles/mapbox/dark-v11",
-  outdoors: "mapbox://styles/mapbox/outdoors-v12",
+  satellite: "mapbox://styles/mapbox/satellite-streets-v12",      // Satellite + labels
+  "satellite-clean": "mapbox://styles/mapbox/satellite-v9",        // Satellite only, no labels
+  streets: "mapbox://styles/mapbox/dark-v11",                      // Dark street map
+  outdoors: "mapbox://styles/mapbox/outdoors-v12",                 // Topo / outdoors
+  light: "mapbox://styles/mapbox/light-v11",                       // Light street map
+};
+
+const STYLE_LABELS: Record<BaseStyle, string> = {
+  satellite: "Sat+Labels",
+  "satellite-clean": "Satellite",
+  streets: "Dark",
+  outdoors: "Topo",
+  light: "Light",
 };
 
 const ZONE_TYPES = [
@@ -896,8 +906,8 @@ export default function PropertyMap() {
       {/* ── Top toolbar ── */}
       <div className="absolute top-3 left-3 right-3 flex items-start justify-between gap-2 pointer-events-none">
         <div className="pointer-events-auto flex flex-col gap-1">
-          <div className="flex gap-1">
-            {(["satellite", "streets", "outdoors"] as BaseStyle[]).map(s => (
+          <div className="flex gap-1 flex-wrap max-w-xs">
+            {(["satellite", "satellite-clean", "outdoors", "streets", "light"] as BaseStyle[]).map(s => (
               <button
                 key={s}
                 onClick={() => setBaseStyle(s)}
@@ -907,8 +917,8 @@ export default function PropertyMap() {
                     : "bg-black/60 text-white border-white/20 hover:bg-black/80"
                 }`}
               >
-                {s === "satellite" ? <Satellite className="w-3 h-3 inline mr-1" /> : <MapIcon className="w-3 h-3 inline mr-1" />}
-                {s.charAt(0).toUpperCase() + s.slice(1)}
+                {s.startsWith("satellite") ? <Satellite className="w-3 h-3 inline mr-1" /> : <MapIcon className="w-3 h-3 inline mr-1" />}
+                {STYLE_LABELS[s]}
               </button>
             ))}
           </div>
