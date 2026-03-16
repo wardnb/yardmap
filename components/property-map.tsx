@@ -27,7 +27,7 @@ type BaseStyle = "satellite" | "satellite-clean" | "streets" | "outdoors" | "lig
 
 const STYLES: Record<BaseStyle, string> = {
   satellite: "mapbox://styles/mapbox/satellite-streets-v12",      // Satellite + labels
-  "satellite-clean": "mapbox://styles/mapbox/satellite-v9",        // Satellite only, no labels
+  "satellite-clean": "mapbox://styles/mapbox/satellite-v9",        // Satellite only, no labels (older, sometimes sharper locally)
   streets: "mapbox://styles/mapbox/dark-v11",                      // Dark street map
   outdoors: "mapbox://styles/mapbox/outdoors-v12",                 // Topo / outdoors
   light: "mapbox://styles/mapbox/light-v11",                       // Light street map
@@ -169,6 +169,9 @@ export default function PropertyMap() {
   const drawMarkersRef = useRef<unknown[]>([]);
 
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [parcelGeo, setParcelGeo] = useState<{type:string; coordinates: number[][][]} | null>(null);
+  const [parcelOffset, setParcelOffset] = useState({ lng: 0, lat: 0 });
+  const [showParcelOffset, setShowParcelOffset] = useState(false);
   const [noToken, setNoToken] = useState(false);
   const [mode, setMode] = useState<MapMode>("view");
   const [baseStyle, setBaseStyle] = useState<BaseStyle>("satellite");
@@ -308,12 +311,35 @@ export default function PropertyMap() {
     const m = mapRef.current;
     if (!m || !mapLoaded) return;
     fetchParcelBoundary(BOISE_COORDS[0], BOISE_COORDS[1]).then(geo => {
-      if (!geo || m.getSource("parcel")) return;
+      if (!geo) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setParcelGeo(geo as any);
+      if (m.getSource("parcel")) return;
       m.addSource("parcel", { type: "geojson", data: { type: "Feature", properties: {}, geometry: geo as never } });
       m.addLayer({ id: "parcel-border", type: "line", source: "parcel", paint: { "line-color": "#ffffff", "line-width": 2, "line-dasharray": [4, 2], "line-opacity": 0.8 } });
       m.addLayer({ id: "parcel-fill", type: "fill", source: "parcel", paint: { "fill-color": "#ffffff", "fill-opacity": 0.04 } });
     });
   }, [mapLoaded]);
+
+  // ── apply parcel offset ───────────────────────────────────────────────────
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !parcelGeo) return;
+    const src = m.getSource("parcel");
+    if (!src) return;
+    const shifted = {
+      type: "Feature" as const,
+      properties: {},
+      geometry: {
+        ...parcelGeo,
+        coordinates: parcelGeo.coordinates.map((ring: number[][]) =>
+          ring.map((pt: number[]) => [pt[0] + parcelOffset.lng, pt[1] + parcelOffset.lat])
+        ),
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (src as any).setData(shifted);
+  }, [parcelOffset, parcelGeo]);
 
   // ── layer toggle effect ───────────────────────────────────────────────────
 
@@ -958,6 +984,33 @@ export default function PropertyMap() {
                   {layers[layer] ? <Eye className="w-3 h-3 text-green-400" /> : <EyeOff className="w-3 h-3 text-muted-foreground" />}
                 </label>
               ))}
+              {parcelGeo && (
+                <div className="border-t border-white/20 pt-1 mt-1">
+                  <button
+                    onClick={() => setShowParcelOffset(v => !v)}
+                    className="text-white/60 hover:text-white flex items-center gap-1"
+                  >
+                    ⊞ Align parcel line
+                  </button>
+                  {showParcelOffset && (
+                    <div className="mt-1 space-y-1">
+                      <div className="flex items-center gap-1">
+                        <span className="text-white/50 w-6">E/W</span>
+                        <button onClick={() => setParcelOffset(p => ({ ...p, lng: p.lng - 0.00001 }))} className="px-1 bg-white/10 rounded">◀</button>
+                        <span className="w-12 text-center">{(parcelOffset.lng * 111000).toFixed(1)}m</span>
+                        <button onClick={() => setParcelOffset(p => ({ ...p, lng: p.lng + 0.00001 }))} className="px-1 bg-white/10 rounded">▶</button>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-white/50 w-6">N/S</span>
+                        <button onClick={() => setParcelOffset(p => ({ ...p, lat: p.lat - 0.00001 }))} className="px-1 bg-white/10 rounded">▼</button>
+                        <span className="w-12 text-center">{(parcelOffset.lat * 111000).toFixed(1)}m</span>
+                        <button onClick={() => setParcelOffset(p => ({ ...p, lat: p.lat + 0.00001 }))} className="px-1 bg-white/10 rounded">▲</button>
+                      </div>
+                      <button onClick={() => setParcelOffset({ lng: 0, lat: 0 })} className="text-white/40 hover:text-white">Reset</button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
