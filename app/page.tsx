@@ -1,3 +1,6 @@
+"use client";
+
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { 
@@ -7,7 +10,9 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { mockTasks, mockPlants, mockInventory, seasonalTips } from "@/lib/mock-data";
+import { getPlants, getTasks, getInventory } from "@/lib/data";
+import { seasonalTips } from "@/lib/mock-data";
+import type { Plant, Task, InventoryItem } from "@/types";
 
 const categoryIcons: Record<string, React.ReactNode> = {
   water: <Droplets className="w-4 h-4 text-blue-400" />,
@@ -19,17 +24,32 @@ const categoryIcons: Record<string, React.ReactNode> = {
 };
 
 export default function Dashboard() {
+  const [plants, setPlants] = useState<Plant[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([getPlants(), getTasks(), getInventory()]).then(([p, t, i]) => {
+      setPlants(p as Plant[]);
+      setTasks(t as Task[]);
+      setInventory(i as InventoryItem[]);
+      setLoading(false);
+    });
+  }, []);
+
   const now = new Date();
   const month = now.getMonth() + 1;
   const tips = seasonalTips[month] || [];
   
-  const upcomingTasks = mockTasks
+  const upcomingTasks = tasks
     .filter(t => !t.completed)
     .sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime())
     .slice(0, 5);
 
-  const needsAttention = mockPlants.filter(p => p.status === "needs_attention");
-  const healthyCount = mockPlants.filter(p => p.status === "healthy").length;
+  const needsAttention = plants.filter(p => p.status === "needs_attention");
+  const healthyCount = plants.filter(p => p.status === "healthy").length;
+  const openTaskCount = tasks.filter(t => !t.completed).length;
   const monthName = now.toLocaleString("default", { month: "long" });
 
   return (
@@ -48,28 +68,28 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <StatCard
           label="Plants"
-          value={mockPlants.length}
-          sub={`${healthyCount} healthy`}
+          value={loading ? "…" : String(plants.length)}
+          sub={loading ? "" : `${healthyCount} healthy`}
           color="text-green-400"
           icon={<Leaf className="w-5 h-5 text-green-400" />}
         />
         <StatCard
           label="Open Tasks"
-          value={mockTasks.filter(t => !t.completed).length}
-          sub="this week"
+          value={loading ? "…" : String(openTaskCount)}
+          sub="pending"
           color="text-blue-400"
           icon={<CheckSquare className="w-5 h-5 text-blue-400" />}
         />
         <StatCard
           label="Needs Attention"
-          value={needsAttention.length}
+          value={loading ? "…" : String(needsAttention.length)}
           sub="plants flagged"
           color="text-yellow-400"
           icon={<AlertTriangle className="w-5 h-5 text-yellow-400" />}
         />
         <StatCard
           label="Inventory"
-          value={mockInventory.length}
+          value={loading ? "…" : String(inventory.length)}
           sub="items in shed"
           color="text-purple-400"
           icon={<Package className="w-5 h-5 text-purple-400" />}
@@ -113,7 +133,9 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {needsAttention.length === 0 ? (
+            {loading ? (
+              <p className="text-sm text-muted-foreground">Loading...</p>
+            ) : needsAttention.length === 0 ? (
               <p className="text-sm text-muted-foreground">All plants looking healthy! 🌿</p>
             ) : (
               <div className="space-y-2">
@@ -148,21 +170,27 @@ export default function Dashboard() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="space-y-2">
-            {upcomingTasks.map(task => (
-              <div key={task.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent/50 transition-colors">
-                {categoryIcons[task.category] || categoryIcons.other}
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">{task.title}</div>
-                  <div className="text-xs text-muted-foreground">
-                    Due {format(new Date(task.due_date), "MMM d")}
-                    {task.recurrence && ` · ${task.recurrence}`}
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : upcomingTasks.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pending tasks. You&apos;re all caught up! ✅</p>
+          ) : (
+            <div className="space-y-2">
+              {upcomingTasks.map(task => (
+                <div key={task.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent/50 transition-colors">
+                  {categoryIcons[task.category] || categoryIcons.other}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">{task.title}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Due {format(new Date(task.due_date), "MMM d")}
+                      {task.recurrence && ` · ${task.recurrence}`}
+                    </div>
                   </div>
+                  <Badge variant="outline" className="text-xs capitalize">{task.category}</Badge>
                 </div>
-                <Badge variant="outline" className="text-xs capitalize">{task.category}</Badge>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -189,7 +217,7 @@ export default function Dashboard() {
 }
 
 function StatCard({ label, value, sub, color, icon }: {
-  label: string; value: number; sub: string; color: string; icon: React.ReactNode;
+  label: string; value: string; sub: string; color: string; icon: React.ReactNode;
 }) {
   return (
     <Card>
