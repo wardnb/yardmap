@@ -317,12 +317,13 @@ export default function PropertyMap() {
     if (!m || !mapLoaded) return;
     if (m.getSource("survey-overlay")) return;
     // Georeferenced bounds from GeoTIFF (NAD83 TM → WGS84 conversion)
-    const bounds: [number, number, number, number][] = [
-      [-116.1635195, 43.5752996], // SW
-      [-116.1627086, 43.5752996], // SE  
-      [-116.1627086, 43.5755109], // NE
-      [-116.1635195, 43.5755080], // NW
-    ];
+    // Georeferenced bounds from Export_2 GeoTIFF (wider view, full property)
+    const bounds = [
+      [-116.1639053, 43.5751257], // SW
+      [-116.1622865, 43.5751315], // SE
+      [-116.1622893, 43.5755484], // NE
+      [-116.1639082, 43.5755425], // NW
+    ] as [[number,number],[number,number],[number,number],[number,number]];
     m.addSource("survey-overlay", {
       type: "image",
       url: "https://imhbpwgyppqdcychauro.supabase.co/storage/v1/object/public/yardmap/property_survey.png",
