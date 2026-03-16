@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { format, isToday, isTomorrow, isPast, parseISO } from "date-fns";
 import { 
   Plus, CheckCircle, Circle, Droplets, Scissors, 
@@ -13,8 +13,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { mockTasks, mockZones, seasonalTips } from "@/lib/mock-data";
-import type { Task } from "@/types";
+import { getTasks, createTask, updateTask, deleteTask, getZones } from "@/lib/data";
+import { seasonalTips } from "@/lib/mock-data";
+import type { Task, Zone } from "@/types";
 
 const categoryConfig: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   water:     { label: "Water",     icon: <Droplets className="w-4 h-4" />,    color: "text-blue-400" },
@@ -34,17 +35,37 @@ function getDueLabel(dateStr: string) {
 }
 
 export default function TasksPage() {
-  const [tasks, setTasks] = useState<Task[]>(mockTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "pending" | "done">("pending");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
 
-  const toggleTask = (id: string) => {
-    setTasks(prev => prev.map(t =>
-      t.id === id
-        ? { ...t, completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }
-        : t
-    ));
+  useEffect(() => {
+    Promise.all([getTasks(), getZones()]).then(([t, z]) => {
+      setTasks(t as Task[]);
+      setZones(z as Zone[]);
+      setLoading(false);
+    });
+  }, []);
+
+  const toggleTask = async (id: string) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const newCompleted = !task.completed;
+    const updates = {
+      completed: newCompleted,
+      completed_at: newCompleted ? new Date().toISOString() : null,
+    };
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
+    try {
+      await updateTask(id, updates);
+    } catch (err) {
+      console.error("Failed to update task:", err);
+      // revert
+      setTasks(prev => prev.map(t => t.id === id ? task : t));
+    }
   };
 
   const filtered = tasks
@@ -82,9 +103,15 @@ export default function TasksPage() {
               <DialogTitle>Add New Task</DialogTitle>
             </DialogHeader>
             <AddTaskForm
-              onAdd={(task) => {
-                setTasks(prev => [...prev, { ...task, id: `t${Date.now()}` }]);
-                setAddOpen(false);
+              zones={zones}
+              onAdd={async (task) => {
+                try {
+                  const newTask = await createTask(task);
+                  setTasks(prev => [...prev, newTask as Task]);
+                  setAddOpen(false);
+                } catch (err) {
+                  console.error("Failed to add task:", err);
+                }
               }}
             />
           </DialogContent>
@@ -102,20 +129,24 @@ export default function TasksPage() {
               {suggestions.map((s, i) => (
                 <button
                   key={i}
-                  onClick={() => {
-                    setTasks(prev => [...prev, {
-                      id: `ts${Date.now()}-${i}`,
-                      property_id: "prop-1",
-                      zone_id: null,
-                      plant_id: null,
-                      title: s,
-                      due_date: format(new Date(), "yyyy-MM-dd"),
-                      category: "other",
-                      recurrence: null,
-                      completed: false,
-                      completed_at: null,
-                      notes: "Seasonal suggestion",
-                    }]);
+                  onClick={async () => {
+                    try {
+                      const newTask = await createTask({
+                        property_id: "00000000-0000-0000-0000-000000000001",
+                        zone_id: null,
+                        plant_id: null,
+                        title: s,
+                        due_date: format(new Date(), "yyyy-MM-dd"),
+                        category: "other",
+                        recurrence: null,
+                        completed: false,
+                        completed_at: null,
+                        notes: "Seasonal suggestion",
+                      });
+                      setTasks(prev => [...prev, newTask as Task]);
+                    } catch (err) {
+                      console.error("Failed to add seasonal task:", err);
+                    }
                   }}
                   className="text-xs bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 px-2 py-1 rounded-full transition-colors flex items-center gap-1"
                 >
@@ -159,7 +190,13 @@ export default function TasksPage() {
 
       {/* Task list */}
       <div className="space-y-2">
-        {filtered.map(task => {
+        {loading && (
+          <div className="text-center py-12 text-muted-foreground">
+            <CheckSquare className="w-12 h-12 mx-auto mb-3 opacity-30 animate-pulse" />
+            <p>Loading tasks...</p>
+          </div>
+        )}
+        {!loading && filtered.map(task => {
           const cat = categoryConfig[task.category] || categoryConfig.other;
           const due = getDueLabel(task.due_date);
           return (
@@ -198,10 +235,20 @@ export default function TasksPage() {
                   <p className="text-xs text-muted-foreground mt-1 truncate">{task.notes}</p>
                 )}
               </div>
+              <button
+                onClick={async () => {
+                  await deleteTask(task.id);
+                  setTasks(prev => prev.filter(t => t.id !== task.id));
+                }}
+                className="text-muted-foreground hover:text-red-400 transition-colors text-xs px-1"
+                title="Delete task"
+              >
+                ✕
+              </button>
             </div>
           );
         })}
-        {filtered.length === 0 && (
+        {!loading && filtered.length === 0 && (
           <div className="text-center py-12 text-muted-foreground">
             <CheckSquare className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>No tasks found</p>
@@ -212,7 +259,7 @@ export default function TasksPage() {
   );
 }
 
-function AddTaskForm({ onAdd }: { onAdd: (task: Omit<Task, "id">) => void }) {
+function AddTaskForm({ zones, onAdd }: { zones: Zone[]; onAdd: (task: Omit<Task, "id">) => void }) {
   const [form, setForm] = useState({
     title: "",
     due_date: format(new Date(), "yyyy-MM-dd"),
@@ -220,7 +267,7 @@ function AddTaskForm({ onAdd }: { onAdd: (task: Omit<Task, "id">) => void }) {
     recurrence: "",
     notes: "",
     zone_id: "",
-    property_id: "prop-1",
+    property_id: "00000000-0000-0000-0000-000000000001",
     plant_id: null as string | null,
     completed: false,
     completed_at: null as string | null,
@@ -276,7 +323,7 @@ function AddTaskForm({ onAdd }: { onAdd: (task: Omit<Task, "id">) => void }) {
             <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="">No zone</SelectItem>
-              {mockZones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}
+              {zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>

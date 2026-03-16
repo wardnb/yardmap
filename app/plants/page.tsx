@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { format } from "date-fns";
 import { Plus, Search, Leaf, AlertTriangle, Skull, SlidersHorizontal, DollarSign } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,8 +11,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { mockPlants, mockZones } from "@/lib/mock-data";
-import type { Plant } from "@/types";
+import { getPlants, getZones, createPlant, deletePlant } from "@/lib/data";
+import type { Plant, Zone } from "@/types";
 import { PhotoGallery } from "@/components/photo-gallery";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Camera } from "lucide-react";
@@ -24,11 +24,21 @@ const statusConfig = {
 };
 
 export default function PlantsPage() {
-  const [plants, setPlants] = useState<Plant[]>(mockPlants);
+  const [plants, setPlants] = useState<Plant[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [addOpen, setAddOpen] = useState(false);
   const [selectedPlant, setSelectedPlant] = useState<Plant | null>(null);
+
+  useEffect(() => {
+    Promise.all([getPlants(), getZones()]).then(([p, z]) => {
+      setPlants(p as Plant[]);
+      setZones(z as Zone[]);
+      setLoading(false);
+    });
+  }, []);
 
   const filtered = plants.filter(p => {
     const matchSearch = !search ||
@@ -40,14 +50,14 @@ export default function PlantsPage() {
   });
 
   const getZoneName = (zoneId: string | null) =>
-    mockZones.find(z => z.id === zoneId)?.name || "Unknown Zone";
+    zones.find(z => z.id === zoneId)?.name || "Unknown Zone";
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">Plant Inventory</h1>
-          <p className="text-muted-foreground mt-1">{plants.length} plants tracked</p>
+          <p className="text-muted-foreground mt-1">{loading ? "Loading..." : `${plants.length} plants tracked`}</p>
         </div>
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogTrigger asChild>
@@ -61,9 +71,15 @@ export default function PlantsPage() {
               <DialogTitle>Add New Plant</DialogTitle>
             </DialogHeader>
             <AddPlantForm
-              onAdd={(plant) => {
-                setPlants(prev => [...prev, { ...plant, id: `p${Date.now()}` }]);
-                setAddOpen(false);
+              zones={zones}
+              onAdd={async (plant) => {
+                try {
+                  const newPlant = await createPlant(plant);
+                  setPlants(prev => [...prev, newPlant as Plant]);
+                  setAddOpen(false);
+                } catch (err) {
+                  console.error("Failed to add plant:", err);
+                }
               }}
             />
           </DialogContent>
@@ -116,7 +132,13 @@ export default function PlantsPage() {
 
       {/* Plant list */}
       <div className="grid gap-3">
-        {filtered.map(plant => {
+        {loading && (
+          <div className="text-center py-12 text-muted-foreground">
+            <Leaf className="w-12 h-12 mx-auto mb-3 opacity-30 animate-pulse" />
+            <p>Loading plants...</p>
+          </div>
+        )}
+        {!loading && filtered.map(plant => {
           const config = statusConfig[plant.status];
           const Icon = config.icon;
           return (
@@ -158,7 +180,7 @@ export default function PlantsPage() {
             </Card>
           );
         })}
-        {filtered.length === 0 && (
+        {!loading && filtered.length === 0 && (
           <div className="text-center py-12 text-muted-foreground">
             <Leaf className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>No plants found</p>
@@ -173,7 +195,15 @@ export default function PlantsPage() {
             <DialogHeader>
               <DialogTitle>{selectedPlant.name}</DialogTitle>
             </DialogHeader>
-            <PlantDetail plant={selectedPlant} zoneName={getZoneName(selectedPlant.zone_id)} />
+            <PlantDetail
+              plant={selectedPlant}
+              zoneName={getZoneName(selectedPlant.zone_id)}
+              onDelete={async (id) => {
+                await deletePlant(id);
+                setPlants(prev => prev.filter(p => p.id !== id));
+                setSelectedPlant(null);
+              }}
+            />
           </DialogContent>
         </Dialog>
       )}
@@ -181,7 +211,7 @@ export default function PlantsPage() {
   );
 }
 
-function PlantDetail({ plant, zoneName }: { plant: Plant; zoneName: string }) {
+function PlantDetail({ plant, zoneName, onDelete }: { plant: Plant; zoneName: string; onDelete: (id: string) => void }) {
   const config = statusConfig[plant.status];
   const Icon = config.icon;
   return (
@@ -235,6 +265,14 @@ function PlantDetail({ plant, zoneName }: { plant: Plant; zoneName: string }) {
               <p className="text-sm bg-muted rounded-lg p-3">{plant.notes}</p>
             </div>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-red-400 border-red-400/30 hover:bg-red-400/10"
+            onClick={() => onDelete(plant.id)}
+          >
+            Delete Plant
+          </Button>
         </div>
       </TabsContent>
 
@@ -251,7 +289,7 @@ function PlantDetail({ plant, zoneName }: { plant: Plant; zoneName: string }) {
   );
 }
 
-function AddPlantForm({ onAdd }: { onAdd: (plant: Omit<Plant, "id">) => void }) {
+function AddPlantForm({ zones, onAdd }: { zones: Zone[]; onAdd: (plant: Omit<Plant, "id">) => void }) {
   const [form, setForm] = useState({
     name: "", species: "", common_name: "", zone_id: "", date_planted: "",
     source: "", cost: "", notes: "", status: "healthy" as Plant["status"],
@@ -290,7 +328,7 @@ function AddPlantForm({ onAdd }: { onAdd: (plant: Omit<Plant, "id">) => void }) 
           <Select value={form.zone_id} onValueChange={v => setForm(p => ({ ...p, zone_id: v }))}>
             <SelectTrigger><SelectValue placeholder="Select zone" /></SelectTrigger>
             <SelectContent>
-              {mockZones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}
+              {zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>

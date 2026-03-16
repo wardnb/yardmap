@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { format, parseISO, isPast, isWithinInterval, addDays } from "date-fns";
 import { 
   Plus, Search, Package, AlertTriangle, DollarSign, 
@@ -14,9 +14,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { mockInventory } from "@/lib/mock-data";
-
-type Item = typeof mockInventory[0];
+import { getInventory, createInventoryItem, updateInventoryItem, deleteInventoryItem } from "@/lib/data";
+import type { InventoryItem } from "@/types";
 
 const categoryConfig: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   fertilizer: { label: "Fertilizer", icon: <Flame className="w-4 h-4" />,        color: "text-orange-400" },
@@ -37,10 +36,19 @@ function getExpiryStatus(expiryDate: string | null) {
 }
 
 export default function InventoryPage() {
-  const [items, setItems] = useState(mockInventory);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
+  const [editItem, setEditItem] = useState<InventoryItem | null>(null);
+
+  useEffect(() => {
+    getInventory().then(data => {
+      setItems(data as InventoryItem[]);
+      setLoading(false);
+    });
+  }, []);
 
   const filtered = items.filter(item => {
     const matchSearch = !search || item.name.toLowerCase().includes(search.toLowerCase());
@@ -61,7 +69,7 @@ export default function InventoryPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">Shed Inventory</h1>
-          <p className="text-muted-foreground mt-1">{items.length} items tracked</p>
+          <p className="text-muted-foreground mt-1">{loading ? "Loading..." : `${items.length} items tracked`}</p>
         </div>
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogTrigger asChild>
@@ -75,9 +83,14 @@ export default function InventoryPage() {
               <DialogTitle>Add Inventory Item</DialogTitle>
             </DialogHeader>
             <AddItemForm
-              onAdd={(item) => {
-                setItems(prev => [...prev, { ...item, id: `i${Date.now()}` }]);
-                setAddOpen(false);
+              onAdd={async (item) => {
+                try {
+                  const newItem = await createInventoryItem(item);
+                  setItems(prev => [...prev, newItem as InventoryItem]);
+                  setAddOpen(false);
+                } catch (err) {
+                  console.error("Failed to add item:", err);
+                }
               }}
             />
           </DialogContent>
@@ -151,12 +164,22 @@ export default function InventoryPage() {
       </div>
 
       {/* Items */}
+      {loading && (
+        <div className="text-center py-12 text-muted-foreground">
+          <Package className="w-12 h-12 mx-auto mb-3 opacity-30 animate-pulse" />
+          <p>Loading inventory...</p>
+        </div>
+      )}
       <div className="grid gap-3 md:grid-cols-2">
-        {filtered.map(item => {
+        {!loading && filtered.map(item => {
           const cat = categoryConfig[item.category] || categoryConfig.other;
           const expiry = getExpiryStatus(item.expiry_date);
           return (
-            <Card key={item.id} className="hover:border-primary/30 transition-colors">
+            <Card
+              key={item.id}
+              className="hover:border-primary/30 transition-colors cursor-pointer"
+              onClick={() => setEditItem(item)}
+            >
               <CardContent className="p-4">
                 <div className="flex items-start gap-3">
                   <div className={`mt-0.5 ${cat.color}`}>{cat.icon}</div>
@@ -165,7 +188,7 @@ export default function InventoryPage() {
                     <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
                       <span className={cat.color}>{cat.label}</span>
                       <span className="font-medium text-foreground">{item.quantity} {item.unit}</span>
-                      {item.cost && (
+                      {item.cost != null && (
                         <span className="flex items-center gap-0.5">
                           <DollarSign className="w-3 h-3" />{item.cost.toFixed(2)}
                         </span>
@@ -185,21 +208,53 @@ export default function InventoryPage() {
             </Card>
           );
         })}
-        {filtered.length === 0 && (
+        {!loading && filtered.length === 0 && (
           <div className="col-span-2 text-center py-12 text-muted-foreground">
             <Package className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>No items found</p>
           </div>
         )}
       </div>
+
+      {/* Edit/delete dialog */}
+      {editItem && (
+        <Dialog open={!!editItem} onOpenChange={() => setEditItem(null)}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{editItem.name}</DialogTitle>
+            </DialogHeader>
+            <EditItemForm
+              item={editItem}
+              onSave={async (updates) => {
+                try {
+                  const updated = await updateInventoryItem(editItem.id, updates);
+                  setItems(prev => prev.map(i => i.id === editItem.id ? updated as InventoryItem : i));
+                  setEditItem(null);
+                } catch (err) {
+                  console.error("Failed to update item:", err);
+                }
+              }}
+              onDelete={async () => {
+                try {
+                  await deleteInventoryItem(editItem.id);
+                  setItems(prev => prev.filter(i => i.id !== editItem.id));
+                  setEditItem(null);
+                } catch (err) {
+                  console.error("Failed to delete item:", err);
+                }
+              }}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
 
-function AddItemForm({ onAdd }: { onAdd: (item: Omit<Item, "id">) => void }) {
+function AddItemForm({ onAdd }: { onAdd: (item: Omit<InventoryItem, "id">) => void }) {
   const [form, setForm] = useState({
     name: "", category: "other", quantity: "1", unit: "",
-    expiry_date: "", cost: "", notes: "", property_id: "prop-1",
+    expiry_date: "", cost: "", notes: "", property_id: "00000000-0000-0000-0000-000000000001",
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -207,7 +262,7 @@ function AddItemForm({ onAdd }: { onAdd: (item: Omit<Item, "id">) => void }) {
     onAdd({
       ...form,
       quantity: parseFloat(form.quantity),
-      cost: form.cost ? parseFloat(form.cost) : 0,
+      cost: form.cost ? parseFloat(form.cost) : null,
       expiry_date: form.expiry_date || null,
     });
   };
@@ -216,12 +271,7 @@ function AddItemForm({ onAdd }: { onAdd: (item: Omit<Item, "id">) => void }) {
     <form onSubmit={handleSubmit} className="space-y-3">
       <div>
         <Label>Name *</Label>
-        <Input
-          value={form.name}
-          onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
-          required
-          placeholder="Product name"
-        />
+        <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} required placeholder="Product name" />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
@@ -237,52 +287,112 @@ function AddItemForm({ onAdd }: { onAdd: (item: Omit<Item, "id">) => void }) {
         </div>
         <div>
           <Label>Quantity</Label>
-          <Input
-            type="number"
-            step="0.1"
-            value={form.quantity}
-            onChange={e => setForm(p => ({ ...p, quantity: e.target.value }))}
-            required
-          />
+          <Input type="number" step="0.1" value={form.quantity} onChange={e => setForm(p => ({ ...p, quantity: e.target.value }))} required />
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
           <Label>Unit</Label>
-          <Input
-            value={form.unit}
-            onChange={e => setForm(p => ({ ...p, unit: e.target.value }))}
-            placeholder="bags, qt, lbs..."
-          />
+          <Input value={form.unit} onChange={e => setForm(p => ({ ...p, unit: e.target.value }))} placeholder="bags, qt, lbs..." />
         </div>
         <div>
           <Label>Cost ($)</Label>
-          <Input
-            type="number"
-            step="0.01"
-            value={form.cost}
-            onChange={e => setForm(p => ({ ...p, cost: e.target.value }))}
-            placeholder="0.00"
-          />
+          <Input type="number" step="0.01" value={form.cost} onChange={e => setForm(p => ({ ...p, cost: e.target.value }))} placeholder="0.00" />
         </div>
       </div>
       <div>
         <Label>Expiry Date</Label>
-        <Input
-          type="date"
-          value={form.expiry_date}
-          onChange={e => setForm(p => ({ ...p, expiry_date: e.target.value }))}
-        />
+        <Input type="date" value={form.expiry_date} onChange={e => setForm(p => ({ ...p, expiry_date: e.target.value }))} />
       </div>
       <div>
         <Label>Notes</Label>
-        <Textarea
-          value={form.notes}
-          onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
-          rows={2}
-        />
+        <Textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
       </div>
       <Button type="submit" className="w-full">Add Item</Button>
+    </form>
+  );
+}
+
+function EditItemForm({ item, onSave, onDelete }: {
+  item: InventoryItem;
+  onSave: (updates: Partial<InventoryItem>) => void;
+  onDelete: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: item.name,
+    category: item.category,
+    quantity: String(item.quantity),
+    unit: item.unit,
+    expiry_date: item.expiry_date || "",
+    cost: item.cost != null ? String(item.cost) : "",
+    notes: item.notes || "",
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSave({
+      name: form.name,
+      category: form.category,
+      quantity: parseFloat(form.quantity),
+      unit: form.unit,
+      cost: form.cost ? parseFloat(form.cost) : null,
+      expiry_date: form.expiry_date || null,
+      notes: form.notes || null,
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div>
+        <Label>Name *</Label>
+        <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} required />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label>Category</Label>
+          <Select value={form.category} onValueChange={v => setForm(p => ({ ...p, category: v }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {Object.entries(categoryConfig).map(([k, v]) => (
+                <SelectItem key={k} value={k}>{v.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label>Quantity</Label>
+          <Input type="number" step="0.1" value={form.quantity} onChange={e => setForm(p => ({ ...p, quantity: e.target.value }))} required />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label>Unit</Label>
+          <Input value={form.unit} onChange={e => setForm(p => ({ ...p, unit: e.target.value }))} />
+        </div>
+        <div>
+          <Label>Cost ($)</Label>
+          <Input type="number" step="0.01" value={form.cost} onChange={e => setForm(p => ({ ...p, cost: e.target.value }))} />
+        </div>
+      </div>
+      <div>
+        <Label>Expiry Date</Label>
+        <Input type="date" value={form.expiry_date} onChange={e => setForm(p => ({ ...p, expiry_date: e.target.value }))} />
+      </div>
+      <div>
+        <Label>Notes</Label>
+        <Textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+      </div>
+      <div className="flex gap-2">
+        <Button type="submit" className="flex-1">Save Changes</Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="text-red-400 border-red-400/30 hover:bg-red-400/10"
+          onClick={onDelete}
+        >
+          Delete
+        </Button>
+      </div>
     </form>
   );
 }
