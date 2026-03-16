@@ -178,6 +178,8 @@ export default function PropertyMap() {
   // Boundary walk
   const [walk, setWalk] = useState<WalkBoundary>({ coords: [], active: false, watchId: null });
   const [walkArea, setWalkArea] = useState<ZoneCalcResult | null>(null);
+  const [walkCoords, setWalkCoords] = useState<[number, number][]>([]);
+  const [walkTargetZoneId, setWalkTargetZoneId] = useState<string | null>(null);
 
   // Photos
   const [, setPhotos] = useState<PhotoPin[]>([]);
@@ -646,6 +648,7 @@ export default function PropertyMap() {
         plantsAt18in: plantCount(sqFt, 18),
         plantsAt24in: plantCount(sqFt, 24),
       });
+      setWalkCoords(prev.coords);
       const m = mapRef.current;
       if (m && prev.coords.length > 2) {
         const closedCoords = [...prev.coords, prev.coords[0]];
@@ -1122,6 +1125,11 @@ export default function PropertyMap() {
               setZones(prev => prev.filter(z => z.id !== id));
               setSelected(null);
             }}
+            onRedrawBoundary={(zoneId) => {
+              setWalkTargetZoneId(zoneId);
+              setSelected(null);
+              startWalk();
+            }}
           />
         </SidePanel>
       )}
@@ -1135,8 +1143,21 @@ export default function PropertyMap() {
 
       {/* ── Walk area result ── */}
       {walkArea && !walk.active && (
-        <SidePanel onClose={() => setWalkArea(null)}>
-          <WalkResultPanel result={walkArea} />
+        <SidePanel onClose={() => { setWalkArea(null); setWalkTargetZoneId(null); }}>
+          <WalkResultPanel
+            result={walkArea}
+            zones={zones}
+            targetZoneId={walkTargetZoneId}
+            onSaveToZone={async (zoneId) => {
+              if (walkCoords.length < 3) return;
+              const closed = [...walkCoords, walkCoords[0]];
+              const geojson = { type: "Polygon", coordinates: [closed] };
+              await updateZone(zoneId, { geojson });
+              setZones(prev => prev.map(z => z.id === zoneId ? { ...z, geojson } : z));
+              setWalkArea(null);
+              setWalkTargetZoneId(null);
+            }}
+          />
         </SidePanel>
       )}
 
@@ -1205,12 +1226,13 @@ function FabSubButton({ icon, label, href, color }: { icon: React.ReactNode; lab
   );
 }
 
-function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSpacing, onUpdate, onDelete }: {
+function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSpacing, onUpdate, onDelete, onRedrawBoundary }: {
   zone: DbZone; plants: DbPlant[]; sqFt: number;
   calcDepth: number; setCalcDepth: (v: number) => void;
   calcSpacing: number; setCalcSpacing: (v: number) => void;
   onUpdate: (id: string, updates: Partial<DbZone>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  onRedrawBoundary: (zoneId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ name: zone.name, type: zone.type, color: zone.color, notes: zone.notes || "" });
@@ -1274,12 +1296,15 @@ function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, s
         <h3 className="font-semibold">{zone.name}</h3>
         <Badge variant="outline" className="text-xs capitalize ml-auto">{zone.type.replace("_", " ")}</Badge>
       </div>
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         <Button size="sm" variant="outline" className="flex-1 gap-1 text-xs" onClick={() => setEditing(true)}>
           <PenLine className="w-3 h-3" /> Edit
         </Button>
+        <Button size="sm" variant="outline" className="flex-1 gap-1 text-xs" onClick={() => onRedrawBoundary(zone.id)}>
+          <Footprints className="w-3 h-3" /> Redraw
+        </Button>
         {confirmDelete ? (
-          <div className="flex gap-1 flex-1">
+          <div className="flex gap-1 w-full">
             <Button size="sm" variant="destructive" className="flex-1 text-xs" onClick={() => onDelete(zone.id)}>Delete</Button>
             <Button size="sm" variant="outline" className="text-xs" onClick={() => setConfirmDelete(false)}>Cancel</Button>
           </div>
@@ -1392,7 +1417,15 @@ function PlantPanel({ plant, onAi, aiLoading, aiResult }: {
   );
 }
 
-function WalkResultPanel({ result }: { result: ZoneCalcResult }) {
+function WalkResultPanel({ result, zones, targetZoneId, onSaveToZone }: {
+  result: ZoneCalcResult;
+  zones: DbZone[];
+  targetZoneId: string | null;
+  onSaveToZone: (zoneId: string) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [selectedZoneId, setSelectedZoneId] = useState(targetZoneId || "");
+
   return (
     <div className="space-y-3 pr-6">
       <div className="flex items-center gap-2">
@@ -1403,6 +1436,32 @@ function WalkResultPanel({ result }: { result: ZoneCalcResult }) {
         <div className="text-muted-foreground text-xs mb-1">Area</div>
         <div className="font-bold text-primary text-lg">{fmtArea(result.sqFt)}</div>
       </div>
+
+      {/* Save to zone */}
+      <div className="bg-amber-900/20 border border-amber-700/30 rounded-lg p-3 space-y-2">
+        <div className="text-xs font-medium text-amber-400">Save boundary to zone</div>
+        <Select value={selectedZoneId} onValueChange={setSelectedZoneId}>
+          <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Pick a zone…" /></SelectTrigger>
+          <SelectContent>
+            {zones.map(z => (
+              <SelectItem key={z.id} value={z.id}>
+                <span className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-sm inline-block" style={{ background: z.color }} />
+                  {z.name}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm" className="w-full gap-1 h-9"
+          disabled={!selectedZoneId || saving}
+          onClick={async () => { setSaving(true); await onSaveToZone(selectedZoneId); setSaving(false); }}
+        >
+          {saving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</> : <><Check className="w-3 h-3" /> Save Boundary</>}
+        </Button>
+      </div>
+
       <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-1">
         <div className="font-medium text-muted-foreground mb-1">🛍️ Mulch needed</div>
         <div>2&quot; depth: <span className="text-foreground font-medium">{result.mulchBags2in} bags</span></div>
