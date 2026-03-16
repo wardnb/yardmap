@@ -85,6 +85,8 @@ interface WalkBoundary {
   coords: [number, number][];
   active: boolean;
   watchId: number | null;
+  sampling: boolean; // averaging GPS right now
+  currentPos: [number, number] | null;
 }
 
 interface ZoneCalcResult {
@@ -176,7 +178,7 @@ export default function PropertyMap() {
   const [measurements, setMeasurements] = useState<MeasurementLine[]>([]);
 
   // Boundary walk
-  const [walk, setWalk] = useState<WalkBoundary>({ coords: [], active: false, watchId: null });
+  const [walk, setWalk] = useState<WalkBoundary>({ coords: [], active: false, watchId: null, sampling: false, currentPos: null });
   const [walkArea, setWalkArea] = useState<ZoneCalcResult | null>(null);
   const [walkCoords, setWalkCoords] = useState<[number, number][]>([]);
   const [walkTargetZoneId, setWalkTargetZoneId] = useState<string | null>(null);
@@ -596,43 +598,73 @@ export default function PropertyMap() {
     );
   }, []);
 
-  // ── Boundary walk ──────────────────────────────────────────────────────────
+  // ── Boundary walk (corner-tap mode) ────────────────────────────────────────
 
   const startWalk = useCallback(() => {
-    setWalk({ coords: [], active: true, watchId: null });
+    setWalk({ coords: [], active: true, watchId: null, sampling: false, currentPos: null });
     setMode("boundary-walk");
+    // Watch position continuously just to show live dot on map
     const id = navigator.geolocation.watchPosition(
       (pos) => {
         const pt: [number, number] = [pos.coords.longitude, pos.coords.latitude];
+        const m = mapRef.current;
+        const mapboxgl = mapboxRef.current;
         setWalk(prev => {
-          const coords = [...prev.coords, pt];
-          const m = mapRef.current;
-          const mapboxgl = mapboxRef.current;
           if (m && mapboxgl) {
-            const data = {
-              type: "FeatureCollection",
-              features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }],
-            };
-            const src = m.getSource("walk-line");
-            if (src) src.setData(data);
-            else {
-              m.addSource("walk-line", { type: "geojson", data });
-              m.addLayer({ id: "walk-line", type: "line", source: "walk-line", paint: { "line-color": "#f59e0b", "line-width": 3, "line-dasharray": [2, 1] } });
-            }
             if (walkMarkerRef.current) (walkMarkerRef.current as { setLngLat: (c: [number,number]) => void }).setLngLat(pt);
             else {
               const el = document.createElement("div");
-              el.style.cssText = `width:16px;height:16px;border-radius:50%;background:#f59e0b;border:2px solid white;box-shadow:0 0 8px rgba(245,158,11,0.8);`;
+              el.style.cssText = `width:14px;height:14px;border-radius:50%;background:#f59e0b;border:2px solid white;box-shadow:0 0 8px rgba(245,158,11,0.8);`;
               walkMarkerRef.current = new mapboxgl.Marker({ element: el }).setLngLat(pt).addTo(m);
             }
           }
-          return { ...prev, coords, watchId: id };
+          return { ...prev, currentPos: pt, watchId: id };
         });
       },
       (err) => setGpsError(err.message),
-      { enableHighAccuracy: true, maximumAge: 1000 }
+      { enableHighAccuracy: true, maximumAge: 500 }
     );
-    setWalk(prev => ({ ...prev, watchId: id }));
+  }, []);
+
+  // Mark a corner — average 3 GPS readings over ~1.5s for accuracy
+  const markCorner = useCallback(() => {
+    setWalk(prev => ({ ...prev, sampling: true }));
+    const samples: [number, number][] = [];
+    const collect = (pos: GeolocationPosition) => {
+      samples.push([pos.coords.longitude, pos.coords.latitude]);
+    };
+    const id = navigator.geolocation.watchPosition(collect, () => {}, { enableHighAccuracy: true, maximumAge: 0 });
+    setTimeout(() => {
+      navigator.geolocation.clearWatch(id);
+      if (samples.length === 0) { setWalk(prev => ({ ...prev, sampling: false })); return; }
+      // Average the samples
+      const avgLng = samples.reduce((s, p) => s + p[0], 0) / samples.length;
+      const avgLat = samples.reduce((s, p) => s + p[1], 0) / samples.length;
+      const pt: [number, number] = [avgLng, avgLat];
+      setWalk(prev => {
+        const coords = [...prev.coords, pt];
+        const m = mapRef.current;
+        const mapboxgl = mapboxRef.current;
+        if (m && mapboxgl) {
+          // Add corner marker
+          const el = document.createElement("div");
+          el.style.cssText = `width:12px;height:12px;border-radius:50%;background:white;border:2px solid #f59e0b;`;
+          new mapboxgl.Marker({ element: el }).setLngLat(pt).addTo(m);
+          // Update line
+          if (coords.length > 1) {
+            const data = { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] };
+            const src = m.getSource("walk-line");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if (src) (src as any).setData(data);
+            else {
+              m.addSource("walk-line", { type: "geojson", data });
+              m.addLayer({ id: "walk-line", type: "line", source: "walk-line", paint: { "line-color": "#f59e0b", "line-width": 2, "line-dasharray": [2, 1] } });
+            }
+          }
+        }
+        return { ...prev, coords, sampling: false };
+      });
+    }, 1500);
   }, []);
 
   const stopWalk = useCallback(() => {
@@ -1030,13 +1062,15 @@ export default function PropertyMap() {
             }}
             activeColor="bg-purple-600 border-purple-400"
           />
-          <ModeButton
-            active={mode === "boundary-walk"}
-            icon={<Footprints className="w-4 h-4" />}
-            label={walk.active ? `Walk (${walk.coords.length}pts)` : "Walk Boundary"}
-            onClick={() => walk.active ? stopWalk() : startWalk()}
-            activeColor="bg-amber-600 border-amber-400"
-          />
+          {!walk.active && (
+            <ModeButton
+              active={mode === "boundary-walk"}
+              icon={<Footprints className="w-4 h-4" />}
+              label="Walk Boundary"
+              onClick={startWalk}
+              activeColor="bg-amber-600 border-amber-400"
+            />
+          )}
         </div>
       )}
 
@@ -1099,9 +1133,40 @@ export default function PropertyMap() {
 
       {/* Walk mode hint */}
       {mode === "boundary-walk" && walk.active && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-amber-900/90 border border-amber-500 text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 pointer-events-auto">
-          <Footprints className="w-4 h-4" />
-          Walking boundary… {walk.coords.length} GPS points. Tap &quot;Walk Boundary&quot; to stop.
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-auto w-72">
+          <div className="bg-amber-900/90 border border-amber-500 text-white text-xs px-3 py-2 rounded-lg text-center w-full">
+            <Footprints className="w-4 h-4 inline mr-1" />
+            {walk.coords.length === 0
+              ? "Walk to a corner, then tap Mark Corner"
+              : `${walk.coords.length} corner${walk.coords.length === 1 ? "" : "s"} marked — walk to next corner`}
+          </div>
+          <div className="flex gap-2 w-full">
+            <button
+              onClick={markCorner}
+              disabled={walk.sampling}
+              className={`flex-1 py-3 rounded-xl font-semibold text-sm shadow-xl border-2 transition-all ${
+                walk.sampling
+                  ? "bg-amber-400 border-amber-300 text-amber-900"
+                  : "bg-amber-500 hover:bg-amber-400 border-amber-300 text-white"
+              }`}
+            >
+              {walk.sampling ? "📍 Sampling…" : "📍 Mark Corner"}
+            </button>
+            {walk.coords.length >= 3 && (
+              <button
+                onClick={stopWalk}
+                className="flex-1 py-3 rounded-xl font-semibold text-sm shadow-xl border-2 bg-green-600 hover:bg-green-500 border-green-400 text-white"
+              >
+                ✓ Finish
+              </button>
+            )}
+            <button
+              onClick={() => { stopWalk(); }}
+              className="px-3 py-3 rounded-xl text-sm shadow-xl border-2 bg-black/60 border-white/20 text-white hover:bg-black/80"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
 
