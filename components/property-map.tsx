@@ -1119,15 +1119,7 @@ export default function PropertyMap() {
             }}
             activeColor="bg-purple-600 border-purple-400"
           />
-          {!walk.active && (
-            <ModeButton
-              active={mode === "boundary-walk"}
-              icon={<Footprints className="w-4 h-4" />}
-              label="Walk Boundary"
-              onClick={startWalk}
-              activeColor="bg-amber-600 border-amber-400"
-            />
-          )}
+          {/* GPS walk removed — not accurate enough for residential use */}
         </div>
       )}
 
@@ -1189,7 +1181,7 @@ export default function PropertyMap() {
       )}
 
       {/* Walk mode hint */}
-      {mode === "boundary-walk" && walk.active && (
+      {false && mode === "boundary-walk" && walk.active && (
         <div className="absolute top-16 left-0 right-0 flex flex-col items-center gap-2 pointer-events-auto px-4 z-30">
           {/* Mode toggle */}
           <div className="flex gap-1 bg-black/70 rounded-lg p-1 border border-white/20 text-xs">
