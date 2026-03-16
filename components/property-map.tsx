@@ -5,10 +5,14 @@ import {
   MapPin, Layers, X, Navigation, Ruler, Map as MapIcon,
   Satellite, Eye, EyeOff, Camera, Plus, Leaf, CheckSquare,
   Footprints, Calculator, ChevronDown, ChevronUp, Loader2,
-  AlertCircle, ZapIcon
+  AlertCircle, ZapIcon, PenLine, Check
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { mockZones, mockPlants } from "@/lib/mock-data";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { getZones, createZone, getPlants } from "@/lib/data";
 import { polylineDistanceFt, polygonAreaSqFt, fmtFt, fmtM, fmtArea, mulchBags, mulchCuYd, plantCount } from "@/lib/geo";
 import { extractExifGps, createPhotoUrl } from "@/lib/exif";
 import { identifyPlant, diagnoseHealth } from "@/lib/ai-plant";
@@ -25,6 +29,40 @@ const STYLES: Record<BaseStyle, string> = {
   streets: "mapbox://styles/mapbox/dark-v11",
   outdoors: "mapbox://styles/mapbox/outdoors-v12",
 };
+
+const ZONE_TYPES = [
+  { value: "lawn", label: "Lawn" },
+  { value: "garden_bed", label: "Garden Bed" },
+  { value: "hardscape", label: "Hardscape" },
+  { value: "irrigation", label: "Irrigation" },
+  { value: "tree", label: "Tree / Shrub" },
+  { value: "vegetable", label: "Vegetable Garden" },
+  { value: "other", label: "Other" },
+];
+
+const ZONE_COLORS = [
+  "#4ade80", "#a78bfa", "#38bdf8", "#fb923c",
+  "#f472b6", "#facc15", "#94a3b8", "#f87171",
+];
+
+interface DbZone {
+  id: string;
+  property_id: string;
+  name: string;
+  type: string;
+  color: string;
+  geojson: object | null;
+  notes: string | null;
+}
+
+interface DbPlant {
+  id: string;
+  zone_id: string | null;
+  name: string;
+  species: string | null;
+  status: "healthy" | "needs_attention" | "dead";
+  notes: string | null;
+}
 
 interface PhotoPin {
   id: string;
@@ -58,12 +96,31 @@ interface ZoneCalcResult {
   plantsAt24in: number;
 }
 
+interface DrawZoneForm {
+  name: string;
+  type: string;
+  color: string;
+  notes: string;
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function buildZoneFeatures() {
+function buildZoneFeaturesFromDb(zones: DbZone[]) {
   const base = BOISE_COORDS;
   const offset = 0.0003;
-  return mockZones.map((zone, i) => {
+  return zones.map((zone, i) => {
+    // If zone has saved geojson, use it; otherwise generate placeholder
+    if (zone.geojson) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const geo = zone.geojson as any;
+      const coords = geo.coordinates?.[0] || [];
+      const sqFt = polygonAreaSqFt(coords.slice(0, -1));
+      return {
+        type: "Feature" as const,
+        properties: { id: zone.id, name: zone.name, type: zone.type, color: zone.color, sqFt },
+        geometry: geo,
+      };
+    }
     const row = Math.floor(i / 2);
     const col = i % 2;
     const cx = base[0] + (col - 0.5) * offset * 3;
@@ -95,6 +152,7 @@ export default function PropertyMap() {
   const userMarkerRef = useRef<unknown>(null);
   const measureMarkersRef = useRef<unknown[]>([]);
   const walkMarkerRef = useRef<unknown>(null);
+  const drawMarkersRef = useRef<unknown[]>([]);
 
   const [mapLoaded, setMapLoaded] = useState(false);
   const [noToken, setNoToken] = useState(false);
@@ -103,6 +161,10 @@ export default function PropertyMap() {
   const [layers, setLayers] = useState<Record<MapLayer, boolean>>({
     zones: true, plants: true, tasks: false, photos: true, measurements: true,
   });
+
+  // Data from Supabase
+  const [zones, setZones] = useState<DbZone[]>([]);
+  const [plants, setPlants] = useState<DbPlant[]>([]);
 
   const [selected, setSelected] = useState<{ type: "zone" | "plant"; id: string } | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
@@ -132,6 +194,29 @@ export default function PropertyMap() {
   const [showLayers, setShowLayers] = useState(false);
   const [showFab, setShowFab] = useState(false);
 
+  // Zone drawing state
+  const [showDrawForm, setShowDrawForm] = useState(false);
+  const [drawForm, setDrawForm] = useState<DrawZoneForm>({ name: "", type: "garden_bed", color: "#4ade80", notes: "" });
+  const [drawCoords, setDrawCoords] = useState<[number, number][]>([]);
+  const [savingZone, setSavingZone] = useState(false);
+
+  // Keep drawCoords accessible in map event handlers via ref
+  const drawCoordsRef = useRef<[number, number][]>([]);
+  drawCoordsRef.current = drawCoords;
+  const drawFormRef = useRef<DrawZoneForm>(drawForm);
+  drawFormRef.current = drawForm;
+  const modeRef = useRef<MapMode>(mode);
+  modeRef.current = mode;
+
+  // ── load data ──────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    Promise.all([getZones(), getPlants()]).then(([z, p]) => {
+      setZones(z as DbZone[]);
+      setPlants(p as DbPlant[]);
+    });
+  }, []);
+
   // ── map init ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -145,7 +230,6 @@ export default function PropertyMap() {
 
     const init = async () => {
       const mapboxgl = (await import("mapbox-gl")).default;
-      // CSS loaded via next.config transpilePackages — no dynamic import needed
       if (cancelled) return;
 
       mapboxRef.current = mapboxgl;
@@ -162,8 +246,6 @@ export default function PropertyMap() {
 
       m.on("load", () => {
         if (cancelled) return;
-        addZoneLayers(m);
-        addPlantMarkers(m, mapboxgl);
         setMapLoaded(true);
       });
     };
@@ -172,6 +254,38 @@ export default function PropertyMap() {
     return () => { cancelled = true; mapRef.current?.remove(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── add zone layers when map+data ready ───────────────────────────────────
+
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapLoaded || zones.length === 0) return;
+    addZoneLayers(m, zones);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapLoaded, zones]);
+
+  // ── add plant markers when map+data ready ────────────────────────────────
+
+  useEffect(() => {
+    const m = mapRef.current;
+    const mapboxgl = mapboxRef.current;
+    if (!m || !mapLoaded || !mapboxgl || plants.length === 0) return;
+    addPlantMarkers(m, mapboxgl, plants);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapLoaded, plants]);
+
+  // ── refresh zone layer when zones list changes ────────────────────────────
+
+  const refreshZoneLayers = useCallback((updatedZones: DbZone[]) => {
+    const m = mapRef.current;
+    if (!m || !mapLoaded) return;
+    const src = m.getSource("zones");
+    if (src) {
+      src.setData({ type: "FeatureCollection", features: buildZoneFeaturesFromDb(updatedZones) });
+    } else {
+      addZoneLayers(m, updatedZones);
+    }
+  }, [mapLoaded]);
 
   // ── layer toggle effect ───────────────────────────────────────────────────
 
@@ -195,7 +309,7 @@ export default function PropertyMap() {
     const m = mapRef.current;
     if (!m || !mapLoaded) return;
     m.once("styledata", () => {
-      addZoneLayers(m);
+      if (zones.length > 0) addZoneLayers(m, zones);
     });
     m.setStyle(STYLES[baseStyle]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -209,52 +323,83 @@ export default function PropertyMap() {
 
     const handleClick = (e: { lngLat: { lng: number; lat: number } }) => {
       const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+      const currentMode = modeRef.current;
 
-      if (mode === "measure") {
+      if (currentMode === "measure") {
         setMeasureCoords(prev => {
           const next = [...prev, pt];
           drawMeasureLine(m, next);
           return next;
         });
+      } else if (currentMode === "draw-zone") {
+        // Add vertex
+        const newCoords = [...drawCoordsRef.current, pt];
+        setDrawCoords(newCoords);
+        updateDrawPreview(m, newCoords, drawFormRef.current.color);
+        addDrawVertex(m, pt);
+      }
+    };
+
+    const handleDblClick = (e: { lngLat: { lng: number; lat: number }; preventDefault: () => void }) => {
+      if (modeRef.current === "draw-zone") {
+        e.preventDefault();
+        // finish zone on double-click
+        finishZoneDrawing();
       }
     };
 
     m.on("click", handleClick);
-    return () => m.off("click", handleClick);
-  }, [mode, mapLoaded]);
+    m.on("dblclick", handleDblClick);
+    return () => {
+      m.off("click", handleClick);
+      m.off("dblclick", handleDblClick);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapLoaded]);
+
+  // Update preview color when form changes
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapLoaded || mode !== "draw-zone") return;
+    updateDrawPreview(m, drawCoords, drawForm.color);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawForm.color]);
 
   // ── helpers: add layers ───────────────────────────────────────────────────
 
-  function addZoneLayers(m: unknown) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const map = m as any;
-    if (!map.getSource("zones")) {
-      map.addSource("zones", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: buildZoneFeatures() },
-      });
-    }
-    if (!map.getLayer("zones-fill")) {
-      map.addLayer({ id: "zones-fill", type: "fill", source: "zones", paint: { "fill-color": ["get", "color"], "fill-opacity": 0.35 } });
-    }
-    if (!map.getLayer("zones-border")) {
-      map.addLayer({ id: "zones-border", type: "line", source: "zones", paint: { "line-color": ["get", "color"], "line-width": 2, "line-opacity": 0.8 } });
-    }
-    if (!map.getLayer("zones-label")) {
-      map.addLayer({ id: "zones-label", type: "symbol", source: "zones", layout: { "text-field": ["get", "name"], "text-size": 11, "text-anchor": "center" }, paint: { "text-color": "#ffffff", "text-halo-color": "rgba(0,0,0,0.7)", "text-halo-width": 1 } });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function addZoneLayers(m: any, dbZones: DbZone[]) {
+    const features = buildZoneFeaturesFromDb(dbZones);
+    const geojson = { type: "FeatureCollection", features };
+
+    if (!m.getSource("zones")) {
+      m.addSource("zones", { type: "geojson", data: geojson });
+    } else {
+      m.getSource("zones").setData(geojson);
     }
 
-    map.on("click", "zones-fill", (e: { features?: { properties?: { id?: string } }[] }) => {
+    if (!m.getLayer("zones-fill")) {
+      m.addLayer({ id: "zones-fill", type: "fill", source: "zones", paint: { "fill-color": ["get", "color"], "fill-opacity": 0.35 } });
+    }
+    if (!m.getLayer("zones-border")) {
+      m.addLayer({ id: "zones-border", type: "line", source: "zones", paint: { "line-color": ["get", "color"], "line-width": 2, "line-opacity": 0.8 } });
+    }
+    if (!m.getLayer("zones-label")) {
+      m.addLayer({ id: "zones-label", type: "symbol", source: "zones", layout: { "text-field": ["get", "name"], "text-size": 11, "text-anchor": "center" }, paint: { "text-color": "#ffffff", "text-halo-color": "rgba(0,0,0,0.7)", "text-halo-width": 1 } });
+    }
+
+    m.on("click", "zones-fill", (e: { features?: { properties?: { id?: string } }[] }) => {
       const id = e.features?.[0]?.properties?.id;
-      if (id && mode === "view") setSelected({ type: "zone", id });
+      if (id && modeRef.current === "view") setSelected({ type: "zone", id });
     });
-    map.on("mouseenter", "zones-fill", () => { map.getCanvas().style.cursor = "pointer"; });
-    map.on("mouseleave", "zones-fill", () => { map.getCanvas().style.cursor = ""; });
+    m.on("mouseenter", "zones-fill", () => { m.getCanvas().style.cursor = "pointer"; });
+    m.on("mouseleave", "zones-fill", () => { m.getCanvas().style.cursor = ""; });
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function addPlantMarkers(m: unknown, mapboxgl: any) {
-    mockPlants.forEach((plant, i) => {
+  function addPlantMarkers(m: any, mapboxgl: any, dbPlants: DbPlant[]) {
+    dbPlants.forEach((plant, i) => {
+      // Use geojson if available, else scatter around center
       const offset = 0.0001;
       const row = Math.floor(i / 3);
       const col = i % 3;
@@ -277,9 +422,140 @@ export default function PropertyMap() {
         setSelected({ type: "plant", id: plant.id });
       });
 
-      new mapboxgl.Marker({ element: el }).setLngLat([cx, cy]).addTo(m as object);
+      new mapboxgl.Marker({ element: el }).setLngLat([cx, cy]).addTo(m);
     });
   }
+
+  // ── Draw-zone helpers ─────────────────────────────────────────────────────
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function updateDrawPreview(m: any, coords: [number, number][], color: string) {
+    if (coords.length < 2) return;
+
+    const closedCoords = coords.length >= 3
+      ? [...coords, coords[0]]
+      : [...coords, coords[coords.length - 1]];
+
+    const lineData = {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        properties: {},
+        geometry: { type: coords.length >= 3 ? "Polygon" : "LineString", coordinates: coords.length >= 3 ? [closedCoords] : coords },
+      }],
+    };
+
+    const src = m.getSource("draw-preview");
+    if (src) {
+      src.setData(lineData);
+    } else {
+      m.addSource("draw-preview", { type: "geojson", data: lineData });
+      m.addLayer({
+        id: "draw-preview-fill",
+        type: "fill",
+        source: "draw-preview",
+        filter: ["==", "$type", "Polygon"],
+        paint: { "fill-color": color, "fill-opacity": 0.25 },
+      });
+      m.addLayer({
+        id: "draw-preview-line",
+        type: "line",
+        source: "draw-preview",
+        paint: { "line-color": color, "line-width": 2.5, "line-dasharray": [3, 1.5] },
+      });
+    }
+
+    // Update fill color dynamically
+    if (m.getLayer("draw-preview-fill")) {
+      m.setPaintProperty("draw-preview-fill", "fill-color", color);
+    }
+    if (m.getLayer("draw-preview-line")) {
+      m.setPaintProperty("draw-preview-line", "line-color", color);
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function addDrawVertex(m: any, coord: [number, number]) {
+    const mapboxgl = mapboxRef.current;
+    if (!mapboxgl) return;
+    const el = document.createElement("div");
+    el.style.cssText = `
+      width: 10px; height: 10px; border-radius: 50%;
+      background: white; border: 2px solid #4ade80;
+      box-shadow: 0 0 0 2px rgba(0,0,0,0.5);
+    `;
+    const marker = new mapboxgl.Marker({ element: el }).setLngLat(coord).addTo(m);
+    drawMarkersRef.current.push(marker);
+  }
+
+  function clearDrawLayers() {
+    const m = mapRef.current;
+    if (!m) return;
+    ["draw-preview-fill", "draw-preview-line"].forEach(id => {
+      if (m.getLayer(id)) m.removeLayer(id);
+    });
+    if (m.getSource("draw-preview")) m.removeSource("draw-preview");
+    (drawMarkersRef.current as { remove: () => void }[]).forEach(mk => mk.remove());
+    drawMarkersRef.current = [];
+  }
+
+  const startZoneDrawing = () => {
+    setDrawCoords([]);
+    setMode("draw-zone");
+    const m = mapRef.current;
+    if (m) m.getCanvas().style.cursor = "crosshair";
+  };
+
+  const cancelZoneDrawing = useCallback(() => {
+    setMode("view");
+    setDrawCoords([]);
+    clearDrawLayers();
+    const m = mapRef.current;
+    if (m) m.getCanvas().style.cursor = "";
+  }, []);
+
+  const finishZoneDrawing = useCallback(async () => {
+    const coords = drawCoordsRef.current;
+    if (coords.length < 3) {
+      alert("Draw at least 3 points to create a zone.");
+      return;
+    }
+
+    setSavingZone(true);
+    const form = drawFormRef.current;
+
+    // Close the polygon
+    const closedRing: [number, number][] = [...coords, coords[0]];
+    const geojson = {
+      type: "Polygon",
+      coordinates: [closedRing],
+    };
+
+    try {
+      const newZone = await createZone({
+        name: form.name || "Unnamed Zone",
+        type: form.type,
+        color: form.color,
+        geojson,
+        notes: form.notes || null,
+      });
+
+      const updatedZones = [...zones, newZone as DbZone];
+      setZones(updatedZones);
+      refreshZoneLayers(updatedZones);
+    } catch (err) {
+      console.error("Failed to save zone:", err);
+      alert("Failed to save zone. Check console for details.");
+    } finally {
+      setSavingZone(false);
+      setMode("view");
+      setDrawCoords([]);
+      setShowDrawForm(false);
+      clearDrawLayers();
+      const m = mapRef.current;
+      if (m) m.getCanvas().style.cursor = "";
+    }
+  }, [zones, refreshZoneLayers]);
 
   // ── GPS: go to my location ────────────────────────────────────────────────
 
@@ -296,7 +572,6 @@ export default function PropertyMap() {
         if (m && mapboxgl) {
           m.flyTo({ center: [longitude, latitude], zoom: 18, speed: 1.5 });
 
-          // Remove old marker
           if (userMarkerRef.current) (userMarkerRef.current as { remove: () => void }).remove();
 
           const el = document.createElement("div");
@@ -305,15 +580,6 @@ export default function PropertyMap() {
             background: #3b82f6; border: 3px solid white;
             box-shadow: 0 0 0 4px rgba(59,130,246,0.3);
           `;
-          const pulse = document.createElement("div");
-          pulse.style.cssText = `
-            position: absolute; width: 40px; height: 40px; border-radius: 50%;
-            top: -13px; left: -13px;
-            background: rgba(59,130,246,0.15);
-            animation: pulse 2s infinite;
-          `;
-          el.appendChild(pulse);
-
           userMarkerRef.current = new mapboxgl.Marker({ element: el })
             .setLngLat([longitude, latitude])
             .addTo(m);
@@ -337,36 +603,23 @@ export default function PropertyMap() {
         const pt: [number, number] = [pos.coords.longitude, pos.coords.latitude];
         setWalk(prev => {
           const coords = [...prev.coords, pt];
-
           const m = mapRef.current;
           const mapboxgl = mapboxRef.current;
           if (m && mapboxgl) {
-            // Update walk line on map
-            const src = m.getSource("walk-line");
             const data = {
               type: "FeatureCollection",
-              features: [{
-                type: "Feature",
-                properties: {},
-                geometry: { type: "LineString", coordinates: coords },
-              }],
+              features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }],
             };
-            if (src) {
-              src.setData(data);
-            } else {
+            const src = m.getSource("walk-line");
+            if (src) src.setData(data);
+            else {
               m.addSource("walk-line", { type: "geojson", data });
               m.addLayer({ id: "walk-line", type: "line", source: "walk-line", paint: { "line-color": "#f59e0b", "line-width": 3, "line-dasharray": [2, 1] } });
             }
-
-            // Move walk marker
             if (walkMarkerRef.current) (walkMarkerRef.current as { setLngLat: (c: [number,number]) => void }).setLngLat(pt);
             else {
               const el = document.createElement("div");
-              el.style.cssText = `
-                width: 16px; height: 16px; border-radius: 50%;
-                background: #f59e0b; border: 2px solid white;
-                box-shadow: 0 0 8px rgba(245,158,11,0.8);
-              `;
+              el.style.cssText = `width:16px;height:16px;border-radius:50%;background:#f59e0b;border:2px solid white;box-shadow:0 0 8px rgba(245,158,11,0.8);`;
               walkMarkerRef.current = new mapboxgl.Marker({ element: el }).setLngLat(pt).addTo(m);
             }
           }
@@ -392,23 +645,16 @@ export default function PropertyMap() {
         plantsAt18in: plantCount(sqFt, 18),
         plantsAt24in: plantCount(sqFt, 24),
       });
-
-      // Close boundary polygon on map
       const m = mapRef.current;
       if (m && prev.coords.length > 2) {
         const closedCoords = [...prev.coords, prev.coords[0]];
         const data = {
           type: "FeatureCollection",
-          features: [{
-            type: "Feature",
-            properties: {},
-            geometry: { type: "Polygon", coordinates: [closedCoords] },
-          }],
+          features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [closedCoords] } }],
         };
         const src = m.getSource("walk-polygon");
-        if (src) {
-          src.setData(data);
-        } else {
+        if (src) src.setData(data);
+        else {
           m.addSource("walk-polygon", { type: "geojson", data });
           m.addLayer({ id: "walk-polygon-fill", type: "fill", source: "walk-polygon", paint: { "fill-color": "#f59e0b", "fill-opacity": 0.2 } });
           m.addLayer({ id: "walk-polygon-border", type: "line", source: "walk-polygon", paint: { "line-color": "#f59e0b", "line-width": 2 } });
@@ -425,11 +671,7 @@ export default function PropertyMap() {
   function drawMeasureLine(m: any, coords: [number, number][]) {
     const data = {
       type: "FeatureCollection",
-      features: coords.length > 1 ? [{
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: coords },
-      }] : [],
+      features: coords.length > 1 ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] : [],
     };
     const src = m.getSource("measure-line");
     if (src) src.setData(data);
@@ -437,25 +679,18 @@ export default function PropertyMap() {
       m.addSource("measure-line", { type: "geojson", data });
       m.addLayer({ id: "measure-line", type: "line", source: "measure-line", paint: { "line-color": "#a855f7", "line-width": 2, "line-dasharray": [3, 1] } });
     }
-
-    // Add point marker via DOM
     const mapboxgl = mapboxRef.current;
     if (!mapboxgl) return;
     const el = document.createElement("div");
     el.style.cssText = "width:8px;height:8px;border-radius:50%;background:#a855f7;border:2px solid white;";
-    const marker = new mapboxgl.Marker({ element: el })
-      .setLngLat(coords[coords.length - 1])
-      .addTo(m);
+    const marker = new mapboxgl.Marker({ element: el }).setLngLat(coords[coords.length - 1]).addTo(m);
     (measureMarkersRef.current as unknown[]).push(marker);
   }
 
   const finishMeasure = () => {
     if (measureCoords.length < 2) { setMeasureCoords([]); setMode("view"); return; }
     const ft = polylineDistanceFt(measureCoords);
-    setMeasurements(prev => [...prev, {
-      id: `m${Date.now()}`, coords: measureCoords,
-      distanceFt: ft, distanceM: ft / 3.28084,
-    }]);
+    setMeasurements(prev => [...prev, { id: `m${Date.now()}`, coords: measureCoords, distanceFt: ft, distanceM: ft / 3.28084 }]);
     setMeasureCoords([]);
     setMode("view");
   };
@@ -477,63 +712,40 @@ export default function PropertyMap() {
   const handlePhotoUpload = useCallback(async (file: File, label: string) => {
     const url = createPhotoUrl(file);
     const exif = await extractExifGps(file);
-
     let lng = BOISE_COORDS[0];
     let lat = BOISE_COORDS[1];
     let hasExifGps = false;
-
-    if (exif) {
-      lng = exif.lng;
-      lat = exif.lat;
-      hasExifGps = true;
-    } else {
-      // Use current map center
+    if (exif) { lng = exif.lng; lat = exif.lat; hasExifGps = true; }
+    else {
       const m = mapRef.current;
-      if (m) {
-        const center = m.getCenter();
-        lng = center.lng;
-        lat = center.lat;
-      }
+      if (m) { const c = m.getCenter(); lng = c.lng; lat = c.lat; }
     }
-
     const pin: PhotoPin = { id: `ph${Date.now()}`, url, lng, lat, label, hasExifGps };
     setPhotos(prev => [...prev, pin]);
-
-    // Add marker to map
     const mapboxgl = mapboxRef.current;
     const m = mapRef.current;
     if (mapboxgl && m) {
       const el = document.createElement("div");
       el.className = "photo-marker";
-      el.style.cssText = `
-        width: 32px; height: 32px; border-radius: 8px;
-        background: #1e293b; border: 2px solid #a855f7;
-        cursor: pointer; overflow: hidden;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-      `;
+      el.style.cssText = `width:32px;height:32px;border-radius:8px;background:#1e293b;border:2px solid #a855f7;cursor:pointer;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.5);`;
       const img = document.createElement("img");
-      img.src = url;
-      img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+      img.src = url; img.style.cssText = "width:100%;height:100%;object-fit:cover;";
       el.appendChild(img);
       el.addEventListener("click", () => setShowPhotoModal(pin));
-
       new mapboxgl.Marker({ element: el }).setLngLat([lng, lat]).addTo(m);
-
-      if (hasExifGps) {
-        m.flyTo({ center: [lng, lat], zoom: 18 });
-      }
+      if (hasExifGps) m.flyTo({ center: [lng, lat], zoom: 18 });
     }
   }, []);
 
   // ── AI identification ─────────────────────────────────────────────────────
 
-  const runAiIdentify = useCallback(async (file: File, mode: "identify" | "diagnose", plantName?: string) => {
+  const runAiIdentify = useCallback(async (file: File, aiMode: "identify" | "diagnose", plantName?: string) => {
     setAiLoading(true);
     setAiResult(null);
     const reader = new FileReader();
     reader.onload = async (e) => {
       const dataUrl = e.target?.result as string;
-      if (mode === "identify") {
+      if (aiMode === "identify") {
         const r = await identifyPlant(dataUrl);
         if (r.isPlaceholder) setAiResult(r.notes || "");
         else if (r.identified) setAiResult(`🌿 **${r.commonName}** (*${r.scientificName}*)\n${r.notes}\n\n💧 ${r.careInstructions}`);
@@ -554,10 +766,10 @@ export default function PropertyMap() {
 
   // ── selected zone/plant ───────────────────────────────────────────────────
 
-  const selectedZone = selected?.type === "zone" ? mockZones.find(z => z.id === selected.id) : null;
-  const selectedPlant = selected?.type === "plant" ? mockPlants.find(p => p.id === selected.id) : null;
+  const selectedZone = selected?.type === "zone" ? zones.find(z => z.id === selected.id) : null;
+  const selectedPlant = selected?.type === "plant" ? plants.find(p => p.id === selected.id) : null;
   const selectedZoneFeature = selectedZone
-    ? buildZoneFeatures().find(f => f.properties.id === selectedZone.id)
+    ? buildZoneFeaturesFromDb(zones).find(f => f.properties.id === selectedZone.id)
     : null;
   const zoneSqFt = selectedZoneFeature?.properties.sqFt || 0;
 
@@ -575,12 +787,8 @@ export default function PropertyMap() {
           <pre className="mt-3 text-left text-xs bg-muted rounded-lg p-3 text-green-400">
             NEXT_PUBLIC_MAPBOX_TOKEN=pk.your.token
           </pre>
-          <p className="text-xs text-muted-foreground mt-2">
-            Get a free token at{" "}
-            <a href="https://mapbox.com" className="text-primary underline" target="_blank" rel="noreferrer">mapbox.com</a>
-          </p>
         </div>
-        <ZoneFallbackList />
+        <ZoneFallbackList zones={zones} />
       </div>
     );
   }
@@ -594,7 +802,6 @@ export default function PropertyMap() {
 
       {/* ── Top toolbar ── */}
       <div className="absolute top-3 left-3 right-3 flex items-start justify-between gap-2 pointer-events-none">
-        {/* Style + layer toggles */}
         <div className="pointer-events-auto flex flex-col gap-1">
           <div className="flex gap-1">
             {(["satellite", "streets", "outdoors"] as BaseStyle[]).map(s => (
@@ -613,7 +820,6 @@ export default function PropertyMap() {
             ))}
           </div>
 
-          {/* Layer toggles */}
           <button
             onClick={() => setShowLayers(v => !v)}
             className="flex items-center gap-1 px-2 py-1 text-xs bg-black/60 text-white rounded-md border border-white/20 hover:bg-black/80 w-fit"
@@ -658,88 +864,217 @@ export default function PropertyMap() {
         )}
       </div>
 
-      {/* ── Mode toolbar (bottom-center, above FAB) ── */}
-      <div className="absolute bottom-20 left-1/2 -translate-x-1/2 flex gap-2 pointer-events-auto">
-        <ModeButton
-          active={mode === "measure"}
-          icon={<Ruler className="w-4 h-4" />}
-          label="Measure"
-          onClick={() => {
-            if (mode === "measure") { finishMeasure(); }
-            else { setMode("measure"); setMeasureCoords([]); }
-          }}
-          activeColor="bg-purple-600 border-purple-400"
-        />
-        <ModeButton
-          active={mode === "boundary-walk"}
-          icon={<Footprints className="w-4 h-4" />}
-          label={walk.active ? `Walk (${walk.coords.length}pts)` : "Walk Boundary"}
-          onClick={() => walk.active ? stopWalk() : startWalk()}
-          activeColor="bg-amber-600 border-amber-400"
-        />
-      </div>
+      {/* ── Draw Zone Form overlay ── */}
+      {showDrawForm && mode !== "draw-zone" && (
+        <div className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20">
+          <div className="pointer-events-auto bg-card border border-border rounded-2xl shadow-2xl p-5 w-full max-w-sm mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold flex items-center gap-2">
+                <PenLine className="w-4 h-4 text-primary" /> New Zone
+              </h3>
+              <button onClick={() => setShowDrawForm(false)} className="text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-      {/* ── GPS + FAB buttons (bottom-right) ── */}
-      <div className="absolute bottom-4 right-4 flex flex-col items-end gap-2 pointer-events-auto">
-        {/* FAB sub-buttons */}
-        {showFab && (
-          <div className="flex flex-col gap-2 items-end mb-1">
-            <FabSubButton
-              icon={<Leaf className="w-4 h-4" />}
-              label="Add Plant"
-              href="/plants"
-              color="bg-green-600"
-            />
-            <FabSubButton
-              icon={<CheckSquare className="w-4 h-4" />}
-              label="Add Task"
-              href="/tasks"
-              color="bg-blue-600"
-            />
-            <label className="flex items-center gap-2 cursor-pointer">
-              <span className="bg-black/70 text-white text-xs px-2 py-1 rounded-lg border border-white/20">Take Photo</span>
-              <div className="w-10 h-10 rounded-full bg-purple-600 flex items-center justify-center shadow-lg">
-                <Camera className="w-4 h-4 text-white" />
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs">Zone Name</Label>
+                <Input
+                  value={drawForm.name}
+                  onChange={e => setDrawForm(p => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Front Garden Bed"
+                  className="mt-1"
+                />
               </div>
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="hidden"
-                onChange={e => {
-                  const f = e.target.files?.[0];
-                  if (f) handlePhotoUpload(f, f.name);
-                  setShowFab(false);
+
+              <div>
+                <Label className="text-xs">Type</Label>
+                <Select value={drawForm.type} onValueChange={v => setDrawForm(p => ({ ...p, type: v }))}>
+                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {ZONE_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label className="text-xs">Color</Label>
+                <div className="flex gap-2 mt-1 flex-wrap">
+                  {ZONE_COLORS.map(c => (
+                    <button
+                      key={c}
+                      onClick={() => setDrawForm(p => ({ ...p, color: c }))}
+                      className={`w-8 h-8 rounded-full border-2 transition-transform ${
+                        drawForm.color === c ? "border-white scale-110" : "border-transparent"
+                      }`}
+                      style={{ background: c }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <Button
+                className="w-full gap-2 h-12 text-base"
+                onClick={() => {
+                  if (!drawForm.name.trim()) {
+                    setDrawForm(p => ({ ...p, name: "My Zone" }));
+                  }
+                  startZoneDrawing();
                 }}
-              />
-            </label>
+              >
+                <PenLine className="w-5 h-5" />
+                Start Drawing
+              </Button>
+              <p className="text-xs text-muted-foreground text-center">
+                Tap points on the map to draw your zone. Double-tap or press Finish to save.
+              </p>
+            </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* GPS button */}
-        <button
-          onClick={goToMyLocation}
-          disabled={gpsLoading}
-          className={`w-12 h-12 rounded-full flex items-center justify-center shadow-xl border-2 transition-colors ${
-            gpsLoading ? "bg-blue-400 border-blue-300" : "bg-blue-600 hover:bg-blue-500 border-blue-400"
-          }`}
-          title="My Location"
-        >
-          {gpsLoading
-            ? <Loader2 className="w-5 h-5 text-white animate-spin" />
-            : <Navigation className="w-5 h-5 text-white" />}
-        </button>
+      {/* ── Draw-zone active controls ── */}
+      {mode === "draw-zone" && (
+        <>
+          {/* Top hint banner */}
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-green-900/95 border border-green-500 text-white text-sm px-4 py-2.5 rounded-full flex items-center gap-2 pointer-events-none shadow-lg z-10">
+            <PenLine className="w-4 h-4" />
+            {drawCoords.length === 0
+              ? "Tap map to place first point"
+              : drawCoords.length < 3
+              ? `${drawCoords.length} point${drawCoords.length !== 1 ? "s" : ""} — need ${3 - drawCoords.length} more`
+              : `${drawCoords.length} points — tap Finish or double-tap`}
+          </div>
 
-        {/* Main FAB */}
-        <button
-          onClick={() => setShowFab(v => !v)}
-          className={`w-14 h-14 rounded-full flex items-center justify-center shadow-xl border-2 transition-all ${
-            showFab ? "bg-red-600 border-red-400 rotate-45" : "bg-primary hover:bg-primary/90 border-primary/50"
-          }`}
-        >
-          <Plus className="w-6 h-6 text-primary-foreground" />
-        </button>
-      </div>
+          {/* Bottom draw controls */}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-3 pointer-events-auto z-10">
+            <button
+              onClick={cancelZoneDrawing}
+              className="flex items-center gap-2 px-5 py-3.5 rounded-full bg-black/80 border border-white/30 text-white text-sm font-medium shadow-xl active:scale-95 transition-transform"
+            >
+              <X className="w-4 h-4" /> Cancel
+            </button>
+            <button
+              onClick={finishZoneDrawing}
+              disabled={drawCoords.length < 3 || savingZone}
+              className={`flex items-center gap-2 px-6 py-3.5 rounded-full text-white text-sm font-semibold shadow-xl active:scale-95 transition-all ${
+                drawCoords.length >= 3 && !savingZone
+                  ? "bg-green-600 border-2 border-green-400"
+                  : "bg-green-900/50 border border-green-800/50 opacity-60"
+              }`}
+            >
+              {savingZone
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
+                : <><Check className="w-4 h-4" /> Finish Zone</>}
+            </button>
+          </div>
+
+          {/* Undo last point */}
+          {drawCoords.length > 0 && (
+            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-auto z-10">
+              <button
+                onClick={() => {
+                  const newCoords = drawCoords.slice(0, -1);
+                  setDrawCoords(newCoords);
+                  // Remove last vertex marker
+                  const markers = drawMarkersRef.current as { remove: () => void }[];
+                  const last = markers.pop();
+                  if (last) last.remove();
+                  // Update preview
+                  const m = mapRef.current;
+                  if (m) {
+                    if (newCoords.length < 2) {
+                      ["draw-preview-fill", "draw-preview-line"].forEach(id => {
+                        if (m.getLayer(id)) m.removeLayer(id);
+                      });
+                      if (m.getSource("draw-preview")) m.removeSource("draw-preview");
+                    } else {
+                      updateDrawPreview(m, newCoords, drawForm.color);
+                    }
+                  }
+                }}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-black/70 border border-white/20 text-white text-xs shadow-lg active:scale-95 transition-transform"
+              >
+                ↩ Undo point
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Mode toolbar (bottom-center) — hidden during draw-zone ── */}
+      {mode !== "draw-zone" && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 flex gap-2 pointer-events-auto">
+          {/* Add Zone button */}
+          <button
+            onClick={() => {
+              setShowDrawForm(true);
+              setSelected(null);
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium border shadow-lg transition-colors bg-green-700 text-white border-green-500 hover:bg-green-600"
+          >
+            <PenLine className="w-4 h-4" /> Add Zone
+          </button>
+          <ModeButton
+            active={mode === "measure"}
+            icon={<Ruler className="w-4 h-4" />}
+            label="Measure"
+            onClick={() => {
+              if (mode === "measure") { finishMeasure(); }
+              else { setMode("measure"); setMeasureCoords([]); }
+            }}
+            activeColor="bg-purple-600 border-purple-400"
+          />
+          <ModeButton
+            active={mode === "boundary-walk"}
+            icon={<Footprints className="w-4 h-4" />}
+            label={walk.active ? `Walk (${walk.coords.length}pts)` : "Walk Boundary"}
+            onClick={() => walk.active ? stopWalk() : startWalk()}
+            activeColor="bg-amber-600 border-amber-400"
+          />
+        </div>
+      )}
+
+      {/* ── GPS + FAB buttons (bottom-right) — hidden during draw-zone ── */}
+      {mode !== "draw-zone" && (
+        <div className="absolute bottom-4 right-4 flex flex-col items-end gap-2 pointer-events-auto">
+          {showFab && (
+            <div className="flex flex-col gap-2 items-end mb-1">
+              <FabSubButton icon={<Leaf className="w-4 h-4" />} label="Add Plant" href="/plants" color="bg-green-600" />
+              <FabSubButton icon={<CheckSquare className="w-4 h-4" />} label="Add Task" href="/tasks" color="bg-blue-600" />
+              <label className="flex items-center gap-2 cursor-pointer">
+                <span className="bg-black/70 text-white text-xs px-2 py-1 rounded-lg border border-white/20">Take Photo</span>
+                <div className="w-10 h-10 rounded-full bg-purple-600 flex items-center justify-center shadow-lg">
+                  <Camera className="w-4 h-4 text-white" />
+                </div>
+                <input type="file" accept="image/*" capture="environment" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handlePhotoUpload(f, f.name); setShowFab(false); }} />
+              </label>
+            </div>
+          )}
+
+          <button
+            onClick={goToMyLocation}
+            disabled={gpsLoading}
+            className={`w-12 h-12 rounded-full flex items-center justify-center shadow-xl border-2 transition-colors ${
+              gpsLoading ? "bg-blue-400 border-blue-300" : "bg-blue-600 hover:bg-blue-500 border-blue-400"
+            }`}
+            title="My Location"
+          >
+            {gpsLoading ? <Loader2 className="w-5 h-5 text-white animate-spin" /> : <Navigation className="w-5 h-5 text-white" />}
+          </button>
+
+          <button
+            onClick={() => setShowFab(v => !v)}
+            className={`w-14 h-14 rounded-full flex items-center justify-center shadow-xl border-2 transition-all ${
+              showFab ? "bg-red-600 border-red-400 rotate-45" : "bg-primary hover:bg-primary/90 border-primary/50"
+            }`}
+          >
+            <Plus className="w-6 h-6 text-primary-foreground" />
+          </button>
+        </div>
+      )}
 
       {/* GPS error toast */}
       {gpsError && (
@@ -771,6 +1106,7 @@ export default function PropertyMap() {
         <SidePanel onClose={() => setSelected(null)}>
           <ZonePanel
             zone={selectedZone}
+            plants={plants}
             sqFt={zoneSqFt}
             calcDepth={calcDepth}
             setCalcDepth={setCalcDepth}
@@ -799,10 +1135,7 @@ export default function PropertyMap() {
         <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50 p-4 pointer-events-auto"
           onClick={() => setShowPhotoModal(null)}>
           <div className="relative max-w-md w-full" onClick={e => e.stopPropagation()}>
-            <button
-              onClick={() => setShowPhotoModal(null)}
-              className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-card border border-border flex items-center justify-center z-10"
-            >
+            <button onClick={() => setShowPhotoModal(null)} className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-card border border-border flex items-center justify-center z-10">
               <X className="w-4 h-4" />
             </button>
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -824,7 +1157,7 @@ export default function PropertyMap() {
 
 function SidePanel({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
-    <div className="absolute bottom-4 left-4 right-4 md:right-auto md:left-4 md:w-80 bg-card border border-border rounded-xl shadow-2xl p-4 pointer-events-auto max-h-[60vh] overflow-y-auto">
+    <div className="absolute bottom-4 left-4 right-4 md:right-auto md:left-4 md:w-80 bg-card border border-border rounded-xl shadow-2xl p-4 pointer-events-auto max-h-[60vh] overflow-y-auto z-10">
       <button onClick={onClose} className="absolute top-3 right-3 text-muted-foreground hover:text-foreground">
         <X className="w-4 h-4" />
       </button>
@@ -862,12 +1195,12 @@ function FabSubButton({ icon, label, href, color }: { icon: React.ReactNode; lab
   );
 }
 
-function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSpacing }: {
-  zone: typeof mockZones[0]; sqFt: number;
+function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSpacing }: {
+  zone: DbZone; plants: DbPlant[]; sqFt: number;
   calcDepth: number; setCalcDepth: (v: number) => void;
   calcSpacing: number; setCalcSpacing: (v: number) => void;
 }) {
-  const plants = mockPlants.filter(p => p.zone_id === zone.id);
+  const zonePlants = plants.filter(p => p.zone_id === zone.id);
   const cuYd = mulchCuYd(sqFt, calcDepth);
   const numPlants = plantCount(sqFt, calcSpacing);
 
@@ -888,7 +1221,6 @@ function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSp
         </div>
       )}
 
-      {/* Mulch calculator */}
       {sqFt > 0 && (
         <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-2">
           <div className="font-medium text-muted-foreground flex items-center gap-1">
@@ -896,11 +1228,7 @@ function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSp
           </div>
           <div className="flex items-center gap-2">
             <label className="text-muted-foreground">Depth:</label>
-            <select
-              value={calcDepth}
-              onChange={e => setCalcDepth(Number(e.target.value))}
-              className="bg-background border border-border rounded px-1 py-0.5 text-xs"
-            >
+            <select value={calcDepth} onChange={e => setCalcDepth(Number(e.target.value))} className="bg-background border border-border rounded px-1 py-0.5 text-xs">
               {[1,2,3,4].map(d => <option key={d} value={d}>{d}&quot;</option>)}
             </select>
           </div>
@@ -911,7 +1239,6 @@ function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSp
         </div>
       )}
 
-      {/* Plant spacing calculator */}
       {sqFt > 0 && (
         <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-2">
           <div className="font-medium text-muted-foreground flex items-center gap-1">
@@ -919,11 +1246,7 @@ function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSp
           </div>
           <div className="flex items-center gap-2">
             <label className="text-muted-foreground">Spacing:</label>
-            <select
-              value={calcSpacing}
-              onChange={e => setCalcSpacing(Number(e.target.value))}
-              className="bg-background border border-border rounded px-1 py-0.5 text-xs"
-            >
+            <select value={calcSpacing} onChange={e => setCalcSpacing(Number(e.target.value))} className="bg-background border border-border rounded px-1 py-0.5 text-xs">
               {[6,9,12,18,24,36].map(s => <option key={s} value={s}>{s}&quot;</option>)}
             </select>
           </div>
@@ -933,14 +1256,12 @@ function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSp
 
       {zone.notes && <p className="text-xs text-muted-foreground">{zone.notes}</p>}
 
-      {plants.length > 0 && (
+      {zonePlants.length > 0 && (
         <div>
-          <div className="text-xs text-muted-foreground mb-1">{plants.length} plant{plants.length !== 1 ? "s" : ""} in this zone</div>
-          {plants.map(p => (
+          <div className="text-xs text-muted-foreground mb-1">{zonePlants.length} plant{zonePlants.length !== 1 ? "s" : ""} in this zone</div>
+          {zonePlants.map(p => (
             <div key={p.id} className="flex items-center gap-2 text-xs py-0.5">
-              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                p.status === "healthy" ? "bg-green-400" : p.status === "needs_attention" ? "bg-yellow-400" : "bg-red-400"
-              }`} />
+              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${p.status === "healthy" ? "bg-green-400" : p.status === "needs_attention" ? "bg-yellow-400" : "bg-red-400"}`} />
               {p.name}
             </div>
           ))}
@@ -951,7 +1272,7 @@ function ZonePanel({ zone, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSp
 }
 
 function PlantPanel({ plant, onAi, aiLoading, aiResult }: {
-  plant: typeof mockPlants[0];
+  plant: DbPlant;
   onAi: (f: File, mode: "identify" | "diagnose", name?: string) => void;
   aiLoading: boolean;
   aiResult: string | null;
@@ -959,34 +1280,24 @@ function PlantPanel({ plant, onAi, aiLoading, aiResult }: {
   return (
     <div className="space-y-3 pr-6">
       <div className="flex items-center gap-2 flex-wrap">
-        <div className={`w-3 h-3 rounded-full flex-shrink-0 ${
-          plant.status === "healthy" ? "bg-green-400" : plant.status === "needs_attention" ? "bg-yellow-400" : "bg-red-400"
-        }`} />
+        <div className={`w-3 h-3 rounded-full flex-shrink-0 ${plant.status === "healthy" ? "bg-green-400" : plant.status === "needs_attention" ? "bg-yellow-400" : "bg-red-400"}`} />
         <h3 className="font-semibold">{plant.name}</h3>
-        <Badge
-          variant={plant.status === "healthy" ? "success" : plant.status === "needs_attention" ? "warning" : "danger"}
-          className="text-xs"
-        >
+        <Badge variant={plant.status === "healthy" ? "success" : plant.status === "needs_attention" ? "warning" : "danger"} className="text-xs">
           {plant.status.replace("_", " ")}
         </Badge>
       </div>
       {plant.species && <p className="text-xs text-muted-foreground italic">{plant.species}</p>}
       {plant.notes && <p className="text-xs text-muted-foreground">{plant.notes}</p>}
 
-      {/* AI buttons */}
       <div className="space-y-2">
         <div className="text-xs font-medium text-muted-foreground">AI Analysis</div>
         <div className="flex gap-2">
           <label className="flex-1 cursor-pointer">
-            <span className="block w-full text-center text-xs py-2 rounded-lg bg-green-900/40 border border-green-700/40 text-green-400 hover:bg-green-900/60 transition-colors">
-              🌿 Identify
-            </span>
+            <span className="block w-full text-center text-xs py-2 rounded-lg bg-green-900/40 border border-green-700/40 text-green-400 hover:bg-green-900/60 transition-colors">🌿 Identify</span>
             <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onAi(f, "identify"); }} />
           </label>
           <label className="flex-1 cursor-pointer">
-            <span className="block w-full text-center text-xs py-2 rounded-lg bg-yellow-900/40 border border-yellow-700/40 text-yellow-400 hover:bg-yellow-900/60 transition-colors">
-              🔍 Diagnose
-            </span>
+            <span className="block w-full text-center text-xs py-2 rounded-lg bg-yellow-900/40 border border-yellow-700/40 text-yellow-400 hover:bg-yellow-900/60 transition-colors">🔍 Diagnose</span>
             <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onAi(f, "diagnose", plant.name); }} />
           </label>
         </div>
@@ -996,9 +1307,7 @@ function PlantPanel({ plant, onAi, aiLoading, aiResult }: {
           </div>
         )}
         {aiResult && (
-          <div className="bg-muted/50 rounded-lg p-2 text-xs whitespace-pre-wrap text-foreground/80">
-            {aiResult}
-          </div>
+          <div className="bg-muted/50 rounded-lg p-2 text-xs whitespace-pre-wrap text-foreground/80">{aiResult}</div>
         )}
       </div>
     </div>
@@ -1031,12 +1340,19 @@ function WalkResultPanel({ result }: { result: ZoneCalcResult }) {
   );
 }
 
-function ZoneFallbackList() {
+function ZoneFallbackList({ zones }: { zones: DbZone[] }) {
+  if (zones.length === 0) {
+    return (
+      <div className="w-full max-w-sm mt-4 text-center text-muted-foreground text-sm">
+        No zones yet. Add a Mapbox token to start mapping your yard.
+      </div>
+    );
+  }
   return (
     <div className="w-full max-w-sm mt-4">
-      <h3 className="text-sm font-medium mb-2 text-muted-foreground">Your Zones</h3>
+      <h3 className="text-sm font-medium mb-2 text-muted-foreground">Your Zones ({zones.length})</h3>
       <div className="grid gap-2">
-        {mockZones.map(zone => (
+        {zones.map(zone => (
           <div key={zone.id} className="flex items-center gap-2 p-2 bg-card border border-border rounded-lg">
             <div className="w-3 h-3 rounded-sm flex-shrink-0" style={{ background: zone.color }} />
             <span className="text-sm font-medium">{zone.name}</span>
