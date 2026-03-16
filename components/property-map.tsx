@@ -170,7 +170,8 @@ export default function PropertyMap() {
 
   const [mapLoaded, setMapLoaded] = useState(false);
   const [parcelGeo, setParcelGeo] = useState<{type:string; coordinates: number[][][]} | null>(null);
-  const [parcelOffset, setParcelOffset] = useState({ lng: 0, lat: 0 });
+  // -2.2m west = -0.00002 lng (calibrated to satellite imagery 2026-03-16)
+  const [parcelOffset, setParcelOffset] = useState({ lng: -0.00002, lat: 0 });
   const [showParcelOffset, setShowParcelOffset] = useState(false);
   const [noToken, setNoToken] = useState(false);
   const [mode, setMode] = useState<MapMode>("view");
