@@ -627,20 +627,47 @@ export default function PropertyMap() {
     );
   }, []);
 
-  // Mark a corner — average 3 GPS readings over ~1.5s for accuracy
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+
+  // Mark a point — collect samples until accuracy < 6m or max 5s, filter outliers
   const markCorner = useCallback(() => {
     setWalk(prev => ({ ...prev, sampling: true }));
-    const samples: [number, number][] = [];
-    const collect = (pos: GeolocationPosition) => {
-      samples.push([pos.coords.longitude, pos.coords.latitude]);
-    };
-    const id = navigator.geolocation.watchPosition(collect, () => {}, { enableHighAccuracy: true, maximumAge: 0 });
+    const samples: { lng: number; lat: number; acc: number }[] = [];
+    let done = false;
+
+    const id = navigator.geolocation.watchPosition(
+      (pos) => {
+        const acc = pos.coords.accuracy;
+        setGpsAccuracy(Math.round(acc));
+        samples.push({ lng: pos.coords.longitude, lat: pos.coords.latitude, acc });
+        // Accept once we have a good reading (acc < 6m) and at least 3 samples
+        if (!done && acc < 6 && samples.length >= 3) {
+          done = true;
+          navigator.geolocation.clearWatch(id);
+          finish(samples);
+        }
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
+
+    // Force finish after 5s even if accuracy isn't great
     setTimeout(() => {
-      navigator.geolocation.clearWatch(id);
-      if (samples.length === 0) { setWalk(prev => ({ ...prev, sampling: false })); return; }
-      // Average the samples
-      const avgLng = samples.reduce((s, p) => s + p[0], 0) / samples.length;
-      const avgLat = samples.reduce((s, p) => s + p[1], 0) / samples.length;
+      if (!done) {
+        done = true;
+        navigator.geolocation.clearWatch(id);
+        finish(samples);
+      }
+    }, 5000);
+
+    function finish(s: typeof samples) {
+      if (s.length === 0) { setWalk(prev => ({ ...prev, sampling: false })); return; }
+      // Sort by accuracy, take best half
+      const sorted = [...s].sort((a, b) => a.acc - b.acc);
+      const best = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2)));
+      // Average the best readings
+      const avgLng = best.reduce((sum, p) => sum + p.lng, 0) / best.length;
+      const avgLat = best.reduce((sum, p) => sum + p.lat, 0) / best.length;
       const pt: [number, number] = [avgLng, avgLat];
       setWalk(prev => {
         const coords = [...prev.coords, pt];
@@ -687,7 +714,8 @@ export default function PropertyMap() {
         }
         return { ...prev, coords, sampling: false };
       });
-    }, 1500);
+      setGpsAccuracy(null);
+    }
   }, []);
 
   const stopWalk = useCallback(() => {
@@ -1176,13 +1204,15 @@ export default function PropertyMap() {
           </div>
           <div className="bg-amber-900/90 border border-amber-500 text-white text-xs px-3 py-2 rounded-lg text-center w-full">
             <Footprints className="w-4 h-4 inline mr-1" />
-            {walk.rectMode
-              ? walk.coords.length === 0
-                ? "Walk to one corner of the zone, tap Mark Point"
-                : "Walk to the opposite corner, tap Mark Point"
-              : walk.coords.length === 0
-                ? "Walk to a point, tap Mark Point"
-                : `${walk.coords.length} point${walk.coords.length === 1 ? "" : "s"} — keep marking or tap Finish (3+ points)`}
+            {walk.sampling
+              ? `Sampling GPS… ${gpsAccuracy !== null ? `±${gpsAccuracy}m` : ""}`
+              : walk.rectMode
+                ? walk.coords.length === 0
+                  ? `Walk to one corner, tap Mark Point${gpsAccuracy !== null ? ` (GPS: ±${gpsAccuracy}m)` : ""}`
+                  : `Walk to opposite corner, tap Mark Point${gpsAccuracy !== null ? ` (±${gpsAccuracy}m)` : ""}`
+                : walk.coords.length === 0
+                  ? `Walk to a point, tap Mark Point${gpsAccuracy !== null ? ` (±${gpsAccuracy}m)` : ""}`
+                  : `${walk.coords.length} point${walk.coords.length === 1 ? "" : "s"} marked${gpsAccuracy !== null ? ` · ±${gpsAccuracy}m` : ""}`}
           </div>
           <div className="flex gap-2 w-full">
             <button
