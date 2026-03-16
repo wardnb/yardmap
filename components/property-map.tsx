@@ -45,9 +45,13 @@ const ZONE_TYPES = [
   { value: "lawn", label: "Lawn" },
   { value: "garden_bed", label: "Garden Bed" },
   { value: "hardscape", label: "Hardscape" },
+  { value: "driveway", label: "Driveway" },
+  { value: "fence", label: "Fence Line" },
   { value: "irrigation", label: "Irrigation" },
   { value: "tree", label: "Tree / Shrub" },
   { value: "vegetable", label: "Vegetable Garden" },
+  { value: "path", label: "Path / Walkway" },
+  { value: "structure", label: "Structure / Building" },
   { value: "other", label: "Other" },
 ];
 
