@@ -675,10 +675,7 @@ export default function PropertyMap() {
           if (previewCoords.length >= 3) {
             const closed = previewCoords[previewCoords.length-1][0] === previewCoords[0][0]
               ? previewCoords : [...previewCoords, previewCoords[0]];
-            const data = { type: "FeatureCollection", features: [
-              { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [closed] } },
-              { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: closed } }
-            ]};
+
             const src = m.getSource("walk-line");
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             if (src) (src as any).setData({ type:"FeatureCollection", features:[{ type:"Feature", properties:{}, geometry:{type:"LineString",coordinates:closed}}]});
