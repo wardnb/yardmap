@@ -5,14 +5,15 @@ import {
   MapPin, Layers, X, Navigation, Ruler, Map as MapIcon,
   Satellite, Eye, EyeOff, Camera, Plus, Leaf, CheckSquare,
   Footprints, Calculator, ChevronDown, ChevronUp, Loader2,
-  AlertCircle, ZapIcon, PenLine, Check
+  AlertCircle, ZapIcon, PenLine, Check, Trash2
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getZones, createZone, getPlants } from "@/lib/data";
+import { getZones, createZone, updateZone, deleteZone, getPlants } from "@/lib/data";
 import { polylineDistanceFt, polygonAreaSqFt, fmtFt, fmtM, fmtArea, mulchBags, mulchCuYd, plantCount } from "@/lib/geo";
 import { extractExifGps, createPhotoUrl } from "@/lib/exif";
 import { identifyPlant, diagnoseHealth } from "@/lib/ai-plant";
@@ -1112,6 +1113,15 @@ export default function PropertyMap() {
             setCalcDepth={setCalcDepth}
             calcSpacing={calcSpacing}
             setCalcSpacing={setCalcSpacing}
+            onUpdate={async (id, updates) => {
+              await updateZone(id, updates);
+              setZones(prev => prev.map(z => z.id === id ? { ...z, ...updates } : z));
+            }}
+            onDelete={async (id) => {
+              await deleteZone(id);
+              setZones(prev => prev.filter(z => z.id !== id));
+              setSelected(null);
+            }}
           />
         </SidePanel>
       )}
@@ -1195,14 +1205,67 @@ function FabSubButton({ icon, label, href, color }: { icon: React.ReactNode; lab
   );
 }
 
-function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSpacing }: {
+function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, setCalcSpacing, onUpdate, onDelete }: {
   zone: DbZone; plants: DbPlant[]; sqFt: number;
   calcDepth: number; setCalcDepth: (v: number) => void;
   calcSpacing: number; setCalcSpacing: (v: number) => void;
+  onUpdate: (id: string, updates: Partial<DbZone>) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ name: zone.name, type: zone.type, color: zone.color, notes: zone.notes || "" });
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
   const zonePlants = plants.filter(p => p.zone_id === zone.id);
   const cuYd = mulchCuYd(sqFt, calcDepth);
   const numPlants = plantCount(sqFt, calcSpacing);
+
+  async function handleSave() {
+    setSaving(true);
+    await onUpdate(zone.id, editForm);
+    setSaving(false);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div className="space-y-3 pr-6">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-semibold">Edit Zone</h3>
+          <button onClick={() => setEditing(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+        </div>
+        <div>
+          <Label className="text-xs">Name</Label>
+          <Input value={editForm.name} onChange={e => setEditForm(p => ({ ...p, name: e.target.value }))} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Type</Label>
+          <Select value={editForm.type} onValueChange={v => setEditForm(p => ({ ...p, type: v }))}>
+            <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {ZONE_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Color</Label>
+          <div className="flex gap-2 mt-1 flex-wrap">
+            {ZONE_COLORS.map(c => (
+              <button key={c} onClick={() => setEditForm(p => ({ ...p, color: c }))}
+                className={`w-8 h-8 rounded-full border-2 transition-transform ${editForm.color === c ? "border-white scale-110" : "border-transparent"}`}
+                style={{ background: c }} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Notes</Label>
+          <Textarea value={editForm.notes} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditForm(p => ({ ...p, notes: e.target.value }))} className="mt-1 text-sm" rows={2} />
+        </div>
+        <Button onClick={handleSave} disabled={saving} className="w-full">{saving ? "Saving..." : "Save Changes"}</Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3 pr-6">
@@ -1210,6 +1273,21 @@ function ZonePanel({ zone, plants, sqFt, calcDepth, setCalcDepth, calcSpacing, s
         <div className="w-3 h-3 rounded-sm" style={{ background: zone.color }} />
         <h3 className="font-semibold">{zone.name}</h3>
         <Badge variant="outline" className="text-xs capitalize ml-auto">{zone.type.replace("_", " ")}</Badge>
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" variant="outline" className="flex-1 gap-1 text-xs" onClick={() => setEditing(true)}>
+          <PenLine className="w-3 h-3" /> Edit
+        </Button>
+        {confirmDelete ? (
+          <div className="flex gap-1 flex-1">
+            <Button size="sm" variant="destructive" className="flex-1 text-xs" onClick={() => onDelete(zone.id)}>Delete</Button>
+            <Button size="sm" variant="outline" className="text-xs" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" className="text-xs text-red-400 border-red-400/30 hover:bg-red-400/10" onClick={() => setConfirmDelete(true)}>
+            <Trash2 className="w-3 h-3" />
+          </Button>
+        )}
       </div>
 
       {sqFt > 0 && (
