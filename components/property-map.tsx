@@ -317,12 +317,12 @@ export default function PropertyMap() {
     if (!m || !mapLoaded) return;
     if (m.getSource("survey-overlay")) return;
     // Georeferenced bounds from GeoTIFF (NAD83 TM → WGS84 conversion)
-    // Georeferenced bounds from Export_2 GeoTIFF (wider view, full property)
+    // Georeferenced bounds from Export.tfw world file (precise, 6.8cm/px)
     const bounds = [
-      [-116.1639053, 43.5751257], // SW
-      [-116.1622865, 43.5751315], // SE
-      [-116.1622893, 43.5755484], // NE
-      [-116.1639082, 43.5755425], // NW
+      [-116.16386444, 43.57512521], // SW
+      [-116.16224557, 43.57513106], // SE
+      [-116.16224842, 43.57554790], // NE
+      [-116.16386729, 43.57554205], // NW
     ] as [[number,number],[number,number],[number,number],[number,number]];
     m.addSource("survey-overlay", {
       type: "image",
