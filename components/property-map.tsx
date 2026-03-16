@@ -318,11 +318,12 @@ export default function PropertyMap() {
     if (m.getSource("survey-overlay")) return;
     // Georeferenced bounds from GeoTIFF (NAD83 TM → WGS84 conversion)
     // Georeferenced bounds from Export.tfw world file (precise, 6.8cm/px)
+    // Mapbox image source coordinates order: [NW, NE, SE, SW]
     const bounds = [
-      [-116.16386444, 43.57512521], // SW
-      [-116.16224557, 43.57513106], // SE
-      [-116.16224842, 43.57554790], // NE
       [-116.16386729, 43.57554205], // NW
+      [-116.16224842, 43.57554790], // NE
+      [-116.16224557, 43.57513106], // SE
+      [-116.16386444, 43.57512521], // SW
     ] as [[number,number],[number,number],[number,number],[number,number]];
     m.addSource("survey-overlay", {
       type: "image",
