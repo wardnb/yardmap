@@ -380,6 +380,21 @@ export default function PropertyMap() {
     if (!m || !mapLoaded) return;
     m.once("styledata", () => {
       if (zones.length > 0) addZoneLayers(m, zones);
+      // Re-add property boundary
+      getProperty().then(prop => {
+        if (!prop?.boundary_geojson || m.getSource("property-boundary")) return;
+        m.addSource("property-boundary", { type: "geojson", data: { type: "Feature", properties: {}, geometry: prop.boundary_geojson as never } });
+        m.addLayer({ id: "property-boundary-line", type: "line", source: "property-boundary", paint: { "line-color": "#22c55e", "line-width": 2, "line-opacity": 0.9 } });
+      });
+      // Re-add parcel overlay
+      if (parcelGeo) {
+        const shifted = { type: "Feature" as const, properties: {}, geometry: { ...parcelGeo, coordinates: parcelGeo.coordinates.map((ring: number[][]) => ring.map((pt: number[]) => [pt[0] + parcelOffset.lng, pt[1] + parcelOffset.lat])) } };
+        if (!m.getSource("parcel")) {
+          m.addSource("parcel", { type: "geojson", data: shifted });
+          m.addLayer({ id: "parcel-border", type: "line", source: "parcel", paint: { "line-color": "#ffffff", "line-width": 2, "line-dasharray": [4, 2], "line-opacity": 0.8 } });
+          m.addLayer({ id: "parcel-fill", type: "fill", source: "parcel", paint: { "fill-color": "#ffffff", "fill-opacity": 0.04 } });
+        }
+      }
     });
     m.setStyle(STYLES[baseStyle]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
