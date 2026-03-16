@@ -1162,7 +1162,7 @@ export default function PropertyMap() {
 
       {/* Walk mode hint */}
       {mode === "boundary-walk" && walk.active && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-auto w-80">
+        <div className="absolute top-16 left-0 right-0 flex flex-col items-center gap-2 pointer-events-auto px-4 z-30">
           {/* Mode toggle */}
           <div className="flex gap-1 bg-black/70 rounded-lg p-1 border border-white/20 text-xs">
             <button
@@ -1188,20 +1188,20 @@ export default function PropertyMap() {
             <button
               onClick={markCorner}
               disabled={walk.sampling || (walk.rectMode && walk.coords.length >= 2)}
-              className={`flex-1 py-3 rounded-xl font-semibold text-sm shadow-xl border-2 transition-all ${
+              className={`flex-1 py-4 rounded-xl font-bold text-base shadow-xl border-2 transition-all active:scale-95 ${
                 walk.sampling ? "bg-amber-400 border-amber-300 text-amber-900"
                 : (walk.rectMode && walk.coords.length >= 2) ? "bg-gray-600 border-gray-500 text-gray-400"
-                : "bg-amber-500 hover:bg-amber-400 border-amber-300 text-white"
+                : "bg-amber-500 border-amber-300 text-white"
               }`}
             >
-              {walk.sampling ? "📍 Sampling…" : "📍 Mark Point"}
+              {walk.sampling ? "⏳ Sampling GPS…" : "📍 Mark Point Here"}
             </button>
             {(walk.rectMode ? walk.coords.length >= 2 : walk.coords.length >= 3) && (
               <button
                 onClick={stopWalk}
-                className="flex-1 py-3 rounded-xl font-semibold text-sm shadow-xl border-2 bg-green-600 hover:bg-green-500 border-green-400 text-white"
+                className="flex-1 py-4 rounded-xl font-bold text-base shadow-xl border-2 bg-green-600 border-green-400 text-white active:scale-95"
               >
-                ✓ Finish
+                ✅ Finish
               </button>
             )}
             <button
