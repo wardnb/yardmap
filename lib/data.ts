@@ -122,6 +122,7 @@ export async function fetchParcelBoundary(lng: number, lat: number, radiusDeg = 
   const features = data.features || [];
   if (!features.length) return null;
   // Find closest to target point
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let best: any = null, bestDist = 999;
   for (const f of features) {
     const ring = f.geometry?.coordinates?.[0];
