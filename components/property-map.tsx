@@ -13,7 +13,7 @@ import { polylineDistanceFt, polygonAreaSqFt, fmtFt, fmtM, fmtArea, mulchBags, m
 import { extractExifGps, createPhotoUrl } from "@/lib/exif";
 import { identifyPlant, diagnoseHealth } from "@/lib/ai-plant";
 
-const BOISE_COORDS: [number, number] = [-116.2023, 43.6150];
+const BOISE_COORDS: [number, number] = [-116.163076, 43.575335];
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
 type MapMode = "view" | "measure" | "boundary-walk" | "draw-zone";
@@ -155,7 +155,7 @@ export default function PropertyMap() {
         container: mapContainer.current!,
         style: STYLES[baseStyle],
         center: BOISE_COORDS,
-        zoom: 17,
+        zoom: 19,
         pitchWithRotate: false,
       });
       mapRef.current = m;
