@@ -85,8 +85,9 @@ interface WalkBoundary {
   coords: [number, number][];
   active: boolean;
   watchId: number | null;
-  sampling: boolean; // averaging GPS right now
+  sampling: boolean;
   currentPos: [number, number] | null;
+  rectMode: boolean; // 2-point rectangle mode
 }
 
 interface ZoneCalcResult {
@@ -178,7 +179,7 @@ export default function PropertyMap() {
   const [measurements, setMeasurements] = useState<MeasurementLine[]>([]);
 
   // Boundary walk
-  const [walk, setWalk] = useState<WalkBoundary>({ coords: [], active: false, watchId: null, sampling: false, currentPos: null });
+  const [walk, setWalk] = useState<WalkBoundary>({ coords: [], active: false, watchId: null, sampling: false, currentPos: null, rectMode: true });
   const [walkArea, setWalkArea] = useState<ZoneCalcResult | null>(null);
   const [walkCoords, setWalkCoords] = useState<[number, number][]>([]);
   const [walkTargetZoneId, setWalkTargetZoneId] = useState<string | null>(null);
@@ -601,7 +602,7 @@ export default function PropertyMap() {
   // ── Boundary walk (corner-tap mode) ────────────────────────────────────────
 
   const startWalk = useCallback(() => {
-    setWalk({ coords: [], active: true, watchId: null, sampling: false, currentPos: null });
+    setWalk(prev => ({ coords: [], active: true, watchId: null, sampling: false, currentPos: null, rectMode: prev.rectMode }));
     setMode("boundary-walk");
     // Watch position continuously just to show live dot on map
     const id = navigator.geolocation.watchPosition(
@@ -662,6 +663,31 @@ export default function PropertyMap() {
             }
           }
         }
+        const isRect = prev.rectMode;
+        // In rect mode: build rectangle from 2 opposite corners
+        let previewCoords = coords;
+        if (isRect && coords.length === 2) {
+          const [a, b] = coords;
+          previewCoords = [[a[0],a[1]], [b[0],a[1]], [b[0],b[1]], [a[0],b[1]], [a[0],a[1]]];
+        }
+        if (m && mapboxgl) {
+          // Update preview polygon
+          if (previewCoords.length >= 3) {
+            const closed = previewCoords[previewCoords.length-1][0] === previewCoords[0][0]
+              ? previewCoords : [...previewCoords, previewCoords[0]];
+            const data = { type: "FeatureCollection", features: [
+              { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [closed] } },
+              { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: closed } }
+            ]};
+            const src = m.getSource("walk-line");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if (src) (src as any).setData({ type:"FeatureCollection", features:[{ type:"Feature", properties:{}, geometry:{type:"LineString",coordinates:closed}}]});
+            else {
+              m.addSource("walk-line", { type: "geojson", data: { type:"FeatureCollection", features:[{type:"Feature",properties:{},geometry:{type:"LineString",coordinates:closed}}]}});
+              m.addLayer({ id: "walk-line", type: "line", source: "walk-line", paint: { "line-color": "#f59e0b", "line-width": 2, "line-dasharray": [2,1] } });
+            }
+          }
+        }
         return { ...prev, coords, sampling: false };
       });
     }, 1500);
@@ -670,7 +696,13 @@ export default function PropertyMap() {
   const stopWalk = useCallback(() => {
     setWalk(prev => {
       if (prev.watchId !== null) navigator.geolocation.clearWatch(prev.watchId);
-      const sqFt = polygonAreaSqFt(prev.coords);
+      // Expand 2-point rect to full polygon
+      let finalCoords = prev.coords;
+      if (prev.rectMode && prev.coords.length === 2) {
+        const [a, b] = prev.coords;
+        finalCoords = [[a[0],a[1]], [b[0],a[1]], [b[0],b[1]], [a[0],b[1]]];
+      }
+      const sqFt = polygonAreaSqFt(finalCoords);
       setWalkArea({
         sqFt,
         mulchBags2in: mulchBags(sqFt, 2),
@@ -680,7 +712,7 @@ export default function PropertyMap() {
         plantsAt18in: plantCount(sqFt, 18),
         plantsAt24in: plantCount(sqFt, 24),
       });
-      setWalkCoords(prev.coords);
+      setWalkCoords(finalCoords);
       const m = mapRef.current;
       if (m && prev.coords.length > 2) {
         const closedCoords = [...prev.coords, prev.coords[0]];
@@ -1133,26 +1165,41 @@ export default function PropertyMap() {
 
       {/* Walk mode hint */}
       {mode === "boundary-walk" && walk.active && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-auto w-72">
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-auto w-80">
+          {/* Mode toggle */}
+          <div className="flex gap-1 bg-black/70 rounded-lg p-1 border border-white/20 text-xs">
+            <button
+              onClick={() => setWalk(p => ({ ...p, coords: [], rectMode: true }))}
+              className={`px-3 py-1 rounded-md font-medium transition-colors ${walk.rectMode ? "bg-amber-500 text-white" : "text-white/60 hover:text-white"}`}
+            >⬜ Rectangle (2 pts)</button>
+            <button
+              onClick={() => setWalk(p => ({ ...p, coords: [], rectMode: false }))}
+              className={`px-3 py-1 rounded-md font-medium transition-colors ${!walk.rectMode ? "bg-amber-500 text-white" : "text-white/60 hover:text-white"}`}
+            >〰 Freeform</button>
+          </div>
           <div className="bg-amber-900/90 border border-amber-500 text-white text-xs px-3 py-2 rounded-lg text-center w-full">
             <Footprints className="w-4 h-4 inline mr-1" />
-            {walk.coords.length === 0
-              ? "Walk to a corner, then tap Mark Corner"
-              : `${walk.coords.length} corner${walk.coords.length === 1 ? "" : "s"} marked — walk to next corner`}
+            {walk.rectMode
+              ? walk.coords.length === 0
+                ? "Walk to one corner of the zone, tap Mark Point"
+                : "Walk to the opposite corner, tap Mark Point"
+              : walk.coords.length === 0
+                ? "Walk to a point, tap Mark Point"
+                : `${walk.coords.length} point${walk.coords.length === 1 ? "" : "s"} — keep marking or tap Finish (3+ points)`}
           </div>
           <div className="flex gap-2 w-full">
             <button
               onClick={markCorner}
-              disabled={walk.sampling}
+              disabled={walk.sampling || (walk.rectMode && walk.coords.length >= 2)}
               className={`flex-1 py-3 rounded-xl font-semibold text-sm shadow-xl border-2 transition-all ${
-                walk.sampling
-                  ? "bg-amber-400 border-amber-300 text-amber-900"
-                  : "bg-amber-500 hover:bg-amber-400 border-amber-300 text-white"
+                walk.sampling ? "bg-amber-400 border-amber-300 text-amber-900"
+                : (walk.rectMode && walk.coords.length >= 2) ? "bg-gray-600 border-gray-500 text-gray-400"
+                : "bg-amber-500 hover:bg-amber-400 border-amber-300 text-white"
               }`}
             >
-              {walk.sampling ? "📍 Sampling…" : "📍 Mark Corner"}
+              {walk.sampling ? "📍 Sampling…" : "📍 Mark Point"}
             </button>
-            {walk.coords.length >= 3 && (
+            {(walk.rectMode ? walk.coords.length >= 2 : walk.coords.length >= 3) && (
               <button
                 onClick={stopWalk}
                 className="flex-1 py-3 rounded-xl font-semibold text-sm shadow-xl border-2 bg-green-600 hover:bg-green-500 border-green-400 text-white"
@@ -1161,7 +1208,7 @@ export default function PropertyMap() {
               </button>
             )}
             <button
-              onClick={() => { stopWalk(); }}
+              onClick={() => { if (walk.watchId !== null) navigator.geolocation.clearWatch(walk.watchId); setWalk(p => ({ ...p, active: false, coords: [] })); setMode("view"); }}
               className="px-3 py-3 rounded-xl text-sm shadow-xl border-2 bg-black/60 border-white/20 text-white hover:bg-black/80"
             >
               <X className="w-4 h-4" />
